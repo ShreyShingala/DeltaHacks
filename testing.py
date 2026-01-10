@@ -55,6 +55,12 @@ def voice_request(data: VoiceData):
     }
 
 
+@app.post("/is-there")
+def is_there():
+    """Lightweight healthcheck for remote clients (phone) to verify server reachability."""
+    return {"status": "ok", "service": "presage", "message": "server reachable"}
+
+
 @app.post("/assistance")
 def assistance():
     """Generate calming assistance messages using all stored context from database."""

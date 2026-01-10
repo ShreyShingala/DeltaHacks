@@ -3,269 +3,227 @@ import Speech
 import AVFoundation
 import SwiftUI
 import Combine
-import SmartSpectraSwiftSDK
+import SmartSpectraSwiftSDK //
 
 class AudioAssistant: ObservableObject {
-    // SPEECH RECOGNITION (EARS)
+    // --- 1. AUDIO & SPEECH VARIABLES ---
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
-    
-    // AUDIO PLAYER (MOUTH)
     private var audioPlayer: AVAudioPlayer?
     
-    // UI VARIABLES
+    // --- 2. UI VARIABLES ---
     @Published var spokenText = "Press mic to speak..."
     @Published var isListening = false
     @Published var serverResponse = "Waiting for server..."
-    @Published var isSpeaking = false // To animate UI when AI talks
+    @Published var isSpeaking = false
     
-    // PRESAGE VARIABLES
+    // --- 3. PRESAGE / VITALS VARIABLES ---
     @Published var currentHeartRate: Double = 0.0
-    @Published var currentFocus: Double = 0.0
+    @Published var currentBreathingRate: Double = 0.0
+    @Published var movementScore: Double = 0.0
     @Published var isHighStress: Bool = false
+    @Published var isFacePresent: Bool = false
     
+    // Internal Logic
     private var monitoringTimer: Timer?
-        
-    // Cooldown so we don't spam the AI every second
     private var lastInterventionTime: Date = Date.distantPast
-    private var interventionLength: TimeInterval = 10
-
-    // Permissions
-    func requestPermissions() async {
-        // Configure and activate audio session for recording and playback
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try audioSession.setActive(true)
-        } catch {
-            print("Audio Session Error: \(error)")
+    private var lastPresenceCheckTime: Date = Date.distantPast
+    private var lastFaceCentroid: CGPoint?
+    
+    // --- 4. START MONITORING ---
+    func startPresageMonitoring() {
+        let apiKey = "QyQg2fsIqw3lSMXVvWIyv6Snt6kid0Dsabg4QHQA"
+        
+        // 1. Setup
+        SmartSpectraSwiftSDK.shared.setApiKey(apiKey)
+        SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
+        SmartSpectraSwiftSDK.shared.setCameraPosition(.front)
+        
+        // 2. Bypass UI (Force Start)
+        SmartSpectraSwiftSDK.shared.showControlsInScreeningView(false)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            print("⚡️ FORCE STARTING SENSORS...")
+            SmartSpectraVitalsProcessor.shared.startProcessing()
+            SmartSpectraVitalsProcessor.shared.startRecording()
         }
-
-        // Request speech recognition authorization
-        let status = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { authStatus in
-                continuation.resume(returning: authStatus)
-            }
-        }
-
-        DispatchQueue.main.async {
-            switch status {
-            case .authorized:
-                self.serverResponse = "Speech authorized."
-            case .denied:
-                self.serverResponse = "Speech permission denied."
-            case .restricted:
-                self.serverResponse = "Speech restricted on this device."
-            case .notDetermined:
-                self.serverResponse = "Speech permission not determined."
-            @unknown default:
-                self.serverResponse = "Unknown speech status."
+        
+        print("✅ Presage Configured")
+        
+        // 3. Start Data Loop
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.monitoringTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                self.processSensorData()
             }
         }
     }
     
-    // --- 1. MICROPHONE LOGIC ---
-    func startListening() {
-        // Cancel existing tasks
-        recognitionTask?.cancel()
-        self.recognitionTask = nil
+    // --- 5. PROCESS SENSORS ---
+    func processSensorData() {
+        guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
         
-        // Setup Audio Session (PlayAndRecord is crucial to hear audio back!)
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("Audio Session Error: \(error)")
+        let heartRate = Double(metrics.pulse.rate.last?.value ?? 0.0)
+        let breathingRate = Double(metrics.breathing.rate.last?.value ?? 0.0)
+        
+        var faceDetected = false
+        var currentMovement = 0.0
+        
+        if let edgeMetrics = SmartSpectraSwiftSDK.shared.edgeMetrics {
+            faceDetected = edgeMetrics.hasFace
+            if let landmarks = edgeMetrics.face.landmarks.last?.value, !landmarks.isEmpty {
+                var totalX: Float = 0, totalY: Float = 0
+                for point in landmarks { totalX += point.x; totalY += point.y }
+                let currentCentroid = CGPoint(x: Double(totalX)/Double(landmarks.count), y: Double(totalY)/Double(landmarks.count))
+                
+                if let last = lastFaceCentroid {
+                    let dx = currentCentroid.x - last.x
+                    let dy = currentCentroid.y - last.y
+                    currentMovement = sqrt(dx*dx + dy*dy)
+                }
+                lastFaceCentroid = currentCentroid
+            } else { lastFaceCentroid = nil }
         }
         
-        // Setup Request
+        // --- NEW: FACE LOSS CHECK ---
+        if !faceDetected {
+            // Check cooldown (only triggers every 10 seconds)
+            if Date().timeIntervalSince(lastPresenceCheckTime) > 10.0 {
+                lastPresenceCheckTime = Date()
+                print("⚠️ Face lost - Calling /is-there")
+                sendToPresenceCheck()
+            }
+        }
+        // ----------------------------
+        
+        self.movementScore = (self.movementScore * 0.7) + (currentMovement * 0.3)
+        
+        DispatchQueue.main.async {
+            self.currentHeartRate = heartRate
+            self.currentBreathingRate = breathingRate
+            self.isFacePresent = faceDetected
+            
+            let isPanicking = (heartRate > 100.0 && breathingRate > 20.0)
+            let isAgitated = (self.movementScore > 15.0)
+            
+            if (isPanicking || isAgitated) {
+                self.isHighStress = true
+                self.triggerAutoHelp(reason: isPanicking ? "Panic" : "Agitation")
+            } else {
+                self.isHighStress = false
+            }
+        }
+    }
+    
+    func triggerAutoHelp(reason: String) {
+        if Date().timeIntervalSince(lastInterventionTime) < 30 { return }
+        if isListening || isSpeaking { return }
+        lastInterventionTime = Date()
+        let msg = "System Alert: Distress detected (\(reason)). HR: \(Int(currentHeartRate)). Reassure user."
+        sendToBackend(text: msg)
+    }
+    
+    // --- 6. MICROPHONE LOGIC ---
+    func startListening() {
+        recognitionTask?.cancel(); recognitionTask = nil
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
+        try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else { return }
         recognitionRequest.shouldReportPartialResults = true
         
-        // Setup Input
         let inputNode = audioEngine.inputNode
+        inputNode.removeTap(onBus: 0)
         let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-            guard let self = self else { return }
-            self.recognitionRequest?.append(buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            recognitionRequest.append(buffer)
         }
         
-        // Start Engine
         audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            isListening = true
-            self.spokenText = ""
-        } catch {
-            print("Engine Start Error: \(error)")
-        }
+        try? audioEngine.start()
         
-        // Start Recognition
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            guard let self = self else { return }
-
+        DispatchQueue.main.async { self.isListening = true; self.spokenText = "Listening..." }
+        
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
             if let result = result {
-                DispatchQueue.main.async {
-                    self.spokenText = result.bestTranscription.formattedString
-                }
-                if result.isFinal {
-                    DispatchQueue.main.async {
-                        self.stopListening(sendData: true)
-                    }
-                    return
-                }
+                DispatchQueue.main.async { self.spokenText = result.bestTranscription.formattedString }
+                if result.isFinal { self.stopListening(sendData: true) }
             }
-
-            if let error = error {
-                print("Recognition error: \(error)")
-                DispatchQueue.main.async {
-                    self.serverResponse = "Recognition error: \(error.localizedDescription)"
-                    self.stopListening(sendData: false)
-                }
-            }
+            if error != nil { self.stopListening(sendData: false) }
         }
     }
     
     func stopListening(sendData: Bool) {
+        if !isListening && !audioEngine.isRunning { return }
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        recognitionTask = nil
-        isListening = false
-        
-        if sendData {
-            sendToBackend(text: self.spokenText)
-        }
+        recognitionRequest = nil; recognitionTask = nil
+        DispatchQueue.main.async { self.isListening = false }
+        if sendData && spokenText != "Listening..." { sendToBackend(text: self.spokenText) }
     }
     
-    // --- 2. NETWORKING LOGIC ---
-    func sendToBackend(text: String) {
+    // --- 7. NETWORKING (STANDARD) ---
+    func sendToBackend(text: String, isSilentLog: Bool = false) {
         let laptopIP = "172.17.79.245"
         guard let url = URL(string: "http://\(laptopIP):8000/listen") else { return }
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        var request = URLRequest(url: url); request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
         let body: [String: Any] = ["text": text]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
-        DispatchQueue.main.async { self.serverResponse = "Sending to Brain..." }
-        print("Sending to \(url.absoluteString): \(text)")
+        if !isSilentLog { DispatchQueue.main.async { self.serverResponse = "Sending..." } }
         
         URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                DispatchQueue.main.async { self.serverResponse = "Connection Error: \(error.localizedDescription)" }
-                return
-            }
-            
+            if let error = error { print("Net: \(error)"); return }
+            if isSilentLog { return }
             guard let data = data else { return }
             
-            // CHECK: Did we get Audio (Bytes) or JSON (Text)?
-            // If the first byte looks like JSON '{', we parse text. Otherwise, we play audio.
-            let firstByte = data.first ?? 0
-            if firstByte == 123 { // '{' in ASCII - It's JSON (Echo Mode)
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    DispatchQueue.main.async {
-                        self.serverResponse = "Server saw: \(json["you_said"] ?? "???")"
-                    }
-                }
+            if data.first != 123 { // Audio
+                DispatchQueue.main.async { self.playAudio(data: data) }
             } else {
-                // It's NOT JSON, assume it's Audio (MP3)
-                DispatchQueue.main.async {
-                    self.serverResponse = "Received Audio! Playing..."
+                DispatchQueue.main.async { self.serverResponse = "Logged." }
+            }
+        }.resume()
+    }
+    
+    // --- 8. NETWORKING (PRESENCE CHECK) ---
+    func sendToPresenceCheck() {
+        // ENDPOINT: /is-there
+        let laptopIP = "172.17.79.245"
+        guard let url = URL(string: "http://\(laptopIP):8000/is-there") else { return }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        // NO BODY ADDED (Matches your "takes no input" requirement)
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error { print("IsThere Error: \(error)"); return }
+            guard let data = data else { return }
+            
+            // If the server returns audio, play it
+            if !data.isEmpty && data.first != 123 {
+                 DispatchQueue.main.async {
+                    print("Playing Presence Check Audio")
                     self.playAudio(data: data)
                 }
             }
         }.resume()
     }
     
-    // --- 3. AUDIO PLAYER LOGIC ---
+    // --- 9. AUDIO PLAYER ---
     func playAudio(data: Data) {
-        do {
-            // Force audio to speaker
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-            
-            self.audioPlayer = try AVAudioPlayer(data: data)
-            self.audioPlayer?.prepareToPlay()
-            self.audioPlayer?.play()
-            
-            DispatchQueue.main.async { self.isSpeaking = true }
-            
-            // Reset UI when audio finishes (rough estimate)
-            let duration = self.audioPlayer?.duration ?? 2.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                self.isSpeaking = false
-            }
-            
-        } catch {
-            print("Playback failed: \(error)")
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        audioPlayer = try? AVAudioPlayer(data: data)
+        audioPlayer?.play()
+        DispatchQueue.main.async { self.isSpeaking = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (audioPlayer?.duration ?? 2)) {
+            self.isSpeaking = false
+            self.serverResponse = "Listening..."
         }
     }
-    
-    
-    func startPresageMonitoring() {
-            // Initialize with API Key (Get this from the Presage Booth!)
-            SmartSpectraSwiftSDK.shared.setApiKey("QyQg2fsIqw3lSMXVvWIyv6Snt6kid0Dsabg4QHQA") //
-            
-            // Poll data every 1.0 seconds
-            monitoringTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                self.checkVitals()
-            }
-        }
-        
-        func checkVitals() {
-            // 1. READ DATA from the SDK buffer
-            // (Note: syntax might vary slightly based on the exact SDK version)
-            guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
-            
-            // Extract values safely
-            let heartRate = metrics.pulse.rate.last?.value ?? 0.0
-            let focusScore = metrics.
-            
-            // Update UI
-            DispatchQueue.main.async {
-                self.currentHeartRate = Double(heartRate)
-                self.currentFocus = focusScore
-            }
-            
-            // 2. THE TRIGGER LOGIC
-            // If Heart Rate is high (> 110) OR Focus is very low (< 30%)
-            let isStressed = (heartRate > 110.0)
-            let isConfused = (focusScore < 0.3)
-            
-            if (isStressed || isConfused) {
-                DispatchQueue.main.async { self.isHighStress = true }
-                triggerAutoHelp()
-            } else {
-                DispatchQueue.main.async { self.isHighStress = false }
-            }
-        }
-        
-        func triggerAutoHelp() {
-            // Check Cooldown: Don't trigger if we just helped in the last 10 seconds
-            if Date().timeIntervalSince(lastInterventionTime) < interventionLength {
-                return
-            }
-            
-            // Check State: Don't trigger if user is currently speaking or AI is speaking
-            if isListening || isSpeaking {
-                return
-            }
-            
-            print("AUTOMATIC INTERVENTION TRIGGERED")
-            lastInterventionTime = Date()
-            
-            // Send a specific context prompt to the backend
-            let contextMessage = "System Alert: User signs of distress detected. Heart Rate: \(Int(currentHeartRate)), Focus: \(Int(currentFocus * 100))%. Please reassure them."
-            
-            sendToBackend(text: contextMessage)
-        }
 }
-

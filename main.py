@@ -29,6 +29,12 @@ def receive_voice(data: VoiceData):
     print("------------------------------------------------")
     return {"status": "received", "you_said": data.text}
 
+@app.post("/is-there")
+def receive_voice():
+    print("------------------------------------------------")
+    print(f"Hey is anyone there?:")
+    print("------------------------------------------------")
+
 @app.post("/speak")
 def speak(data: VoiceData):
     response = requests.post(

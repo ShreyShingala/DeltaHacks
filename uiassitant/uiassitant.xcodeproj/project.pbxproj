@@ -277,6 +277,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = uiassitant/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need to hear you to help you.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We convert your speech to text to understand your needs.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -313,6 +314,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = uiassitant/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need to hear you to help you.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We convert your speech to text to understand your needs.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

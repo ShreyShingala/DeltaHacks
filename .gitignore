@@ -61,4 +61,7 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 .venv/
+
+# Env files
+.env
 __pycache__/

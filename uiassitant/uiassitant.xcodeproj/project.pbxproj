@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		35E664FB2F12DD5900C2816B /* SmartSpectraSwiftSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 35E664FA2F12DD5900C2816B /* SmartSpectraSwiftSDK */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		35E664E92F12D5D500C2816B /* uiassitant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = uiassitant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				35E664FB2F12DD5900C2816B /* SmartSpectraSwiftSDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = uiassitant;
 			packageProductDependencies = (
+				35E664FA2F12DD5900C2816B /* SmartSpectraSwiftSDK */,
 			);
 			productName = uiassitant;
 			productReference = 35E664E92F12D5D500C2816B /* uiassitant.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 35E664E02F12D5D500C2816B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				35E664F92F12DD5900C2816B /* XCRemoteSwiftPackageReference "SmartSpectra" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 35E664EA2F12D5D500C2816B /* Products */;
 			projectDirPath = "";
@@ -347,6 +356,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		35E664F92F12DD5900C2816B /* XCRemoteSwiftPackageReference "SmartSpectra" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Presage-Security/SmartSpectra";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		35E664FA2F12DD5900C2816B /* SmartSpectraSwiftSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 35E664F92F12DD5900C2816B /* XCRemoteSwiftPackageReference "SmartSpectra" */;
+			productName = SmartSpectraSwiftSDK;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 35E664E12F12D5D500C2816B /* Project object */;
 }

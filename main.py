@@ -13,7 +13,7 @@ print("API key loaded:", bool(os.getenv("ELEVENLABS_API_KEY")))
 app = FastAPI()
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-VOICE_ID = "21m00Tcm4TlvDq8ikWAM" 
+VOICE_ID = "TxGEqnHWrfWFTfGW9XjX"
 
 class VoiceData(BaseModel):
     text: str

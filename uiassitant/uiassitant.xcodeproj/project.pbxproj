@@ -10,9 +10,22 @@
 		35E664E92F12D5D500C2816B /* uiassitant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = uiassitant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		35E664F82F12D80B00C2816B /* Exceptions for "uiassitant" folder in "uiassitant" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 35E664E82F12D5D500C2816B /* uiassitant */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		35E664EB2F12D5D500C2816B /* uiassitant */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				35E664F82F12D80B00C2816B /* Exceptions for "uiassitant" folder in "uiassitant" target */,
+			);
 			path = uiassitant;
 			sourceTree = "<group>";
 		};
@@ -253,7 +266,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "";
+				INFOPLIST_FILE = uiassitant/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need to hear you to help you.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We convert your speech to text to understand your needs.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -285,7 +300,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "";
+				INFOPLIST_FILE = uiassitant/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need to hear you to help you.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "We convert your speech to text to understand your needs.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

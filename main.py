@@ -82,6 +82,9 @@ def receive_voice(data: VoiceData):
     extracted_info = extract_important_info(data.text)
     print(f"📊 EXTRACTED INFO: {extracted_info}")
     
+    # Add original_message to extracted_info so frontend can access it
+    extracted_info["original_message"] = data.text
+    
     # 2. Save the extracted info to MongoDB
     try:
         print("💾 Saving to MongoDB...")

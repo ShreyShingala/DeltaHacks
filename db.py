@@ -45,7 +45,7 @@ def save_event(user: str, info: dict) -> None:
 #     db = client.get_database("presage_db")
 #     events = db.get_collection("events")
 
-def get_context_for_user(user: str, limit: int = 20) -> list:
+def get_context_for_user(user: str, limit: int = 2000) -> list:
     """
     Return the most recent `limit` events for `user`, newest first.
     Assumes `events` is a valid pymongo Collection created elsewhere.

@@ -5,347 +5,320 @@ import SwiftUI
 import Combine
 import SmartSpectraSwiftSDK
 
-// Inherit from NSObject for Audio Delegate
 class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
-    // --- 1. AUDIO & SPEECH VARIABLES ---
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private let audioEngine = AVAudioEngine()
-    private var audioPlayer: AVAudioPlayer?
+    // --- UI VARIABLES ---
+    @Published var spokenText = "Initializing..."
+    @Published var isListening = false // Green (Your Turn)
+    @Published var isSpeaking = false  // Blue (AI Turn)
     
-    // --- 2. UI VARIABLES ---
-    @Published var spokenText = "Press mic to speak..."
-    @Published var isListening = false
-    @Published var serverResponse = "Waiting for server..."
-    @Published var isSpeaking = false
-    
-    // --- 3. PRESAGE / VITALS VARIABLES ---
+    // --- VITALS VARIABLES ---
     @Published var currentHeartRate: Double = 0.0
     @Published var currentBreathingRate: Double = 0.0
     @Published var movementScore: Double = 0.0
     @Published var isHighStress: Bool = false
     @Published var isFacePresent: Bool = false
     
-    // Internal Logic
-    private var monitoringTimer: Timer?
-    private var isMonitoring = false
-    private var lastInterventionTime: Date = Date.distantPast
-    private var lastPresenceCheckTime: Date = Date.distantPast
-    private var lastFaceCentroid: CGPoint?
+    // --- AUDIO COMPONENTS ---
+    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var audioEngine: AVAudioEngine?
+    private var audioPlayer: AVAudioPlayer?
     
-    // Conversation Logic
-    private var faceLossAlertCount: Int = 0
+    // --- STATE MANAGEMENT ---
+    private var monitoringTimer: Timer?
     private var silenceTimer: Timer?
-    private let silenceThreshold: TimeInterval = 1.5 // Wait 1.5s of silence before sending
+    private var speakingTimer: Timer?
+    private var isMonitoring = false
+    private var isProcessingRequest = false // THE SHIELD
+    
+    // Config
+    private let silenceThreshold: TimeInterval = 1.5
+    private let serverIP = "172.17.79.245" // YOUR LAPTOP IP
     
     // --- INIT ---
     override init() {
         super.init()
         let apiKey = "QyQg2fsIqw3lSMXVvWIyv6Snt6kid0Dsabg4QHQA"
-        print("🔑 Setting API Key...")
         SmartSpectraSwiftSDK.shared.setApiKey(apiKey)
         SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
         SmartSpectraSwiftSDK.shared.setCameraPosition(.front)
+        
+        // Initial Audio Setup
+        configureAudioSession()
+        
+        // Auto-start
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.startListeningSequence()
+        }
     }
     
-    // --- 4. START MONITORING ---
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            // OPTIMIZED FOR VOLUME:
+            // 1. .playAndRecord: Required for mic + speaker.
+            // 2. .default: Standard audio processing (often louder than videoChat).
+            // 3. .defaultToSpeaker: The critical option.
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            
+            // Force the override immediately
+            try session.overrideOutputAudioPort(.speaker)
+        } catch { print("❌ Session Error: \(error)") }
+    }
+    
+    // Helper to AGGRESSIVELY force loud speaker
+    private func forceSpeaker() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            // Reset override to none first (sometimes helps "jiggle" the state)
+            try session.overrideOutputAudioPort(.none)
+            // Then force speaker
+            try session.overrideOutputAudioPort(.speaker)
+        } catch {
+            print("🔊 Speaker Override Failed: \(error)")
+        }
+    }
+    
+    // --- START / STOP ---
     func startPresageMonitoring() {
         isMonitoring = true
-        faceLossAlertCount = 0
         
-        // Prevent SIGABRT: If already processing, just resume the data loop
         if SmartSpectraVitalsProcessor.shared.processingStatus == .processing {
-            startDataLoop()
-            // Auto-start listening if we aren't already
-            if !isListening && !isSpeaking { startListening() }
+            startVitalsLoop()
             return
         }
         
-        stopPresageMonitoring() // Safety Reset
-        isMonitoring = true
-        
-        print("⏳ Waiting for Camera Initialization (3s)...")
-        
-        // Wait for Auth to finish
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            if self.isMonitoring && SmartSpectraVitalsProcessor.shared.processingStatus != .processing {
-                print("⚡️ ATTEMPTING FORCE START...")
-                SmartSpectraVitalsProcessor.shared.startProcessing()
-                SmartSpectraVitalsProcessor.shared.startRecording()
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            SmartSpectraVitalsProcessor.shared.startProcessing()
+            SmartSpectraVitalsProcessor.shared.startRecording()
         }
-        
-        // Start Data & Audio Loops
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            if self.isMonitoring {
-                self.startDataLoop()
-                self.startListening() // Start the Conversation Loop
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.startVitalsLoop()
         }
     }
     
-    func startDataLoop() {
+    func stopPresageMonitoring() {
+        isMonitoring = false
+        monitoringTimer?.invalidate()
+        SmartSpectraVitalsProcessor.shared.stopProcessing()
+        SmartSpectraVitalsProcessor.shared.stopRecording()
+    }
+    
+    private func startVitalsLoop() {
         monitoringTimer?.invalidate()
         monitoringTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
             self.processSensorData()
         }
     }
     
-    func stopPresageMonitoring() {
-        print("🛑 STOPPING ALL")
-        isMonitoring = false
-        monitoringTimer?.invalidate()
-        monitoringTimer = nil
-        stopListening(sendData: false) // Kill mic
-        audioPlayer?.stop() // Kill audio
-        
-        if SmartSpectraVitalsProcessor.shared.processingStatus == .processing {
-            SmartSpectraVitalsProcessor.shared.stopProcessing()
-            SmartSpectraVitalsProcessor.shared.stopRecording()
-        }
-    }
+    // ==========================================
+    //  AUDIO LOGIC
+    // ==========================================
     
-    // --- 5. PROCESS SENSORS ---
-    func processSensorData() {
-        if !isMonitoring { return }
-        guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
+    func nukeAudio() {
+        silenceTimer?.invalidate()
+        speakingTimer?.invalidate()
         
-        let heartRate = Double(metrics.pulse.rate.last?.value ?? 0.0)
-        let breathingRate = Double(metrics.breathing.rate.last?.value ?? 0.0)
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
         
-        var faceDetected = false
-        var currentMovement = 0.0
-        
-        if let edgeMetrics = SmartSpectraSwiftSDK.shared.edgeMetrics {
-            faceDetected = edgeMetrics.hasFace
-            if let landmarks = edgeMetrics.face.landmarks.last?.value, !landmarks.isEmpty {
-                var totalX: Float = 0, totalY: Float = 0
-                for point in landmarks { totalX += point.x; totalY += point.y }
-                let currentCentroid = CGPoint(x: Double(totalX)/Double(landmarks.count), y: Double(totalY)/Double(landmarks.count))
-                
-                if let last = lastFaceCentroid {
-                    let dx = currentCentroid.x - last.x
-                    let dy = currentCentroid.y - last.y
-                    currentMovement = sqrt(dx*dx + dy*dy)
-                }
-                lastFaceCentroid = currentCentroid
-            } else { lastFaceCentroid = nil }
+        if let engine = audioEngine {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
         }
+        audioEngine = nil
         
-        // --- FACE LOSS CHECK (LIMITED TO 2 TIMES) ---
-        if !faceDetected {
-            if isMonitoring &&
-                Date().timeIntervalSince(lastPresenceCheckTime) > 10.0 &&
-                !isSpeaking &&
-                faceLossAlertCount < 2 {
-                
-                lastPresenceCheckTime = Date()
-                faceLossAlertCount += 1
-                
-                print("⚠️ Face lost - Calling /is-there (Attempt \(faceLossAlertCount)/2)")
-                sendToPresenceCheck()
-            }
+        if let player = audioPlayer {
+            player.stop()
+            player.delegate = nil
         }
-        
-        self.movementScore = (self.movementScore * 0.7) + (currentMovement * 0.3)
+        audioPlayer = nil
         
         DispatchQueue.main.async {
-            self.currentHeartRate = heartRate
-            self.currentBreathingRate = breathingRate
-            self.isFacePresent = faceDetected
+            self.isListening = false
+            self.isSpeaking = false
+        }
+    }
+    
+    // 2. START LISTENING
+    func startListeningSequence() {
+        if isProcessingRequest { return } // Shield Check
+        
+        nukeAudio()
+        
+        DispatchQueue.main.async {
+            self.isListening = true
+            self.spokenText = "Listening..."
+        }
+        
+        audioEngine = AVAudioEngine()
+        guard let engine = audioEngine else { return }
+        
+        let inputNode = engine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let request = recognitionRequest else { return }
+        request.shouldReportPartialResults = true
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            request.append(buffer)
+        }
+        
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch { print("❌ Engine Error: \(error)"); return }
+        
+        recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
+            if self.isProcessingRequest { return } // Shield Check
             
-            let isPanicking = (heartRate > 100.0 && breathingRate > 20.0)
-            let isAgitated = (self.movementScore > 15.0)
-            
-            if (isPanicking || isAgitated) {
-                self.isHighStress = true
-                self.triggerAutoHelp(reason: isPanicking ? "Panic" : "Agitation")
-            } else {
-                self.isHighStress = false
+            if let result = result {
+                DispatchQueue.main.async { self.spokenText = result.bestTranscription.formattedString }
+                self.resetSilenceTimer()
             }
         }
     }
     
-    func triggerAutoHelp(reason: String) {
-        if !isMonitoring { return }
-        if Date().timeIntervalSince(lastInterventionTime) < 30 { return }
-        if isListening || isSpeaking { return }
-        lastInterventionTime = Date()
-        let msg = "System Alert: Distress detected (\(reason)). HR: \(Int(currentHeartRate)). Reassure user."
+    // 3. SILENCE DETECTED
+    private func resetSilenceTimer() {
+        if isProcessingRequest { return }
         
-        // Interject if needed
-        stopListening(sendData: false)
-        audioPlayer?.stop()
-        sendToBackend(text: msg)
+        silenceTimer?.invalidate()
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { _ in
+            print("🤫 Silence detected. Sending...")
+            self.sendDataToBackend()
+        }
     }
     
-    // --- 6. MICROPHONE LOGIC (MASTER CONTROL) ---
-    func startListening() {
-        // A. INTERRUPTION LOGIC: If AI is speaking, shut it up and listen to user
-        if isSpeaking {
-            print("👆 User Interruption detected!")
-            audioPlayer?.stop()
-            audioPlayer?.delegate = nil // Stop the "DidFinish" callback loop
-            DispatchQueue.main.async { self.isSpeaking = false }
-        }
+    // 4. SEND DATA
+    func sendDataToBackend() {
+        isProcessingRequest = true // ENGAGE SHIELD
+        let messageToSend = self.spokenText
+        nukeAudio()
         
-        // A. If already listening, do nothing (Button tap will act as STOP in UI)
-        if isListening { return }
-        
-        // B. Reset State
-        silenceTimer?.invalidate()
-        if recognitionTask != nil { recognitionTask?.cancel(); recognitionTask = nil }
-        
-        // C. Force Audio Session to Record Mode
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch { print("Audio Session Error: \(error)") }
-        
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else { return }
-        recognitionRequest.shouldReportPartialResults = true
-        
-        let inputNode = audioEngine.inputNode
-        inputNode.removeTap(onBus: 0)
-        
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
-        }
-        
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            DispatchQueue.main.async { self.isListening = true; self.spokenText = "I'm listening..." }
-        } catch {
-            print("Engine Start Error: \(error)")
+        if messageToSend.isEmpty || messageToSend == "Listening..." || messageToSend == "Speaking..." {
+            isProcessingRequest = false
+            startListeningSequence()
             return
         }
         
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
-            if let result = result {
-                DispatchQueue.main.async { self.spokenText = result.bestTranscription.formattedString }
-                
-                // RESET SILENCE TIMER ON EVERY WORD
-                self.resetSilenceTimer()
-                
-                if result.isFinal { self.stopListening(sendData: true) }
-            }
-            if error != nil { self.stopListening(sendData: false) }
+        DispatchQueue.main.async {
+            self.isSpeaking = true
+            self.spokenText = "Thinking..."
         }
-    }
-    
-    // Detects when you stop talking
-    private func resetSilenceTimer() {
-        silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { _ in
-            print("🤫 Silence detected (Auto-Send).")
-            self.stopListening(sendData: true)
+        
+        guard let url = URL(string: "http://\(serverIP):8000/listen") else {
+            isProcessingRequest = false
+            return
         }
-    }
-    
-    func stopListening(sendData: Bool) {
-        silenceTimer?.invalidate() // Kill timer immediately
-        
-        if !isListening && !audioEngine.isRunning { return }
-        
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        recognitionRequest = nil
-        recognitionTask = nil
-        audioEngine.reset()
-        
-        DispatchQueue.main.async { self.isListening = false }
-        
-        // Valid Input Check
-        if sendData && spokenText.count > 1 && spokenText != "I'm listening..." && spokenText != "Press mic to speak..." {
-            DispatchQueue.main.async { self.serverResponse = "Thinking..." }
-            sendToBackend(text: self.spokenText)
-        } else if isMonitoring && !isSpeaking {
-            // If we heard nothing/junk, and we aren't speaking, just listen again
-            // startListening() // Uncomment this if you want it to be VERY aggressive
-        }
-    }
-    
-    // --- 7. NETWORKING ---
-    func sendToBackend(text: String, isSilentLog: Bool = false) {
-        // REPLACE WITH YOUR IP
-        let laptopIP = "192.168.1.55"
-        guard let url = URL(string: "http://\(laptopIP):8000/listen") else { return }
-        
         var request = URLRequest(url: url); request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["text": text]
+        let body: [String: Any] = ["text": messageToSend]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error { print("Net: \(error)"); return }
-            if isSilentLog { return }
-            guard let data = data else { return }
-            
-            if data.first != 123 { // Audio
-                DispatchQueue.main.async { self.playAudio(data: data) }
-            } else {
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            if error != nil || data == nil || data?.first == 123 {
                 DispatchQueue.main.async {
-                    self.serverResponse = "Logged."
-                    // If no audio back, just listen again
-                    if self.isMonitoring { self.startListening() }
+                    self.isProcessingRequest = false
+                    self.startListeningSequence()
                 }
+                return
             }
+            DispatchQueue.main.async { self.playAudio(data: data!) }
         }.resume()
     }
     
-    func sendToPresenceCheck() {
-        let laptopIP = "192.168.1.55"
-        guard let url = URL(string: "http://\(laptopIP):8000/is-there") else { return }
-        var request = URLRequest(url: url); request.httpMethod = "POST"
-        
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error { print("IsThere Error: \(error)"); return }
-            guard let data = data else { return }
-            if !data.isEmpty && data.first != 123 {
-                 DispatchQueue.main.async {
-                    print("🔊 Playing Presence Check Audio")
-                    self.stopListening(sendData: false) // Stop mic so we can speak
-                    self.playAudio(data: data)
-                }
-            }
-        }.resume()
-    }
-    
-    // --- 8. AUDIO PLAYER (AUTO-RESUME) ---
+    // 5. PLAY AUDIO (THE VOLUME FIX)
     func playAudio(data: Data) {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            // 1. Force Session Active
             try AVAudioSession.sharedInstance().setActive(true)
             
-            self.audioPlayer = try AVAudioPlayer(data: data)
-            self.audioPlayer?.delegate = self // Listen for finish
-            self.audioPlayer?.prepareToPlay()
-            self.audioPlayer?.play()
+            // 2. FORCE SPEAKER OUTPUT AGGRESSIVELY
+            forceSpeaker()
             
-            DispatchQueue.main.async {
-                self.isSpeaking = true
-                self.serverResponse = "Speaking..."
+            // 3. Setup Player
+            audioPlayer = try AVAudioPlayer(data: data)
+            audioPlayer?.delegate = self
+            audioPlayer?.volume = 1.0 // Max Volume
+            audioPlayer?.prepareToPlay()
+            
+            let success = audioPlayer?.play() ?? false
+            
+            if success {
+                DispatchQueue.main.async {
+                    self.isSpeaking = true
+                    self.spokenText = "Speaking..."
+                }
+                
+                // Watchdog
+                let duration = audioPlayer?.duration ?? 2.0
+                speakingTimer?.invalidate()
+                speakingTimer = Timer.scheduledTimer(withTimeInterval: duration + 1.0, repeats: false) { _ in
+                    print("⚠️ Watchdog Reset")
+                    self.finishTurn()
+                }
+            } else {
+                finishTurn()
             }
-            
-        } catch { print("Play Error: \(error)") }
+        } catch {
+            print("❌ Play Error: \(error)")
+            finishTurn()
+        }
     }
     
-    // DELEGATE: Called when Audio Finishes
+    // 6. FINISH
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        print("✅ Audio Finished. Resuming Listening...")
-        DispatchQueue.main.async {
-            self.isSpeaking = false
-            self.serverResponse = "Listening..."
-            
-            // AUTO-RESUME LISTENING
-            if self.isMonitoring {
-                self.startListening()
+        print("✅ AI Finished.")
+        finishTurn()
+    }
+    
+    func finishTurn() {
+        speakingTimer?.invalidate()
+        isProcessingRequest = false // RELEASE SHIELD
+        startListeningSequence()
+    }
+    
+    // --- EMERGENCY ---
+    func triggerEmergency() {
+        isProcessingRequest = true
+        nukeAudio()
+        let msg = "EMERGENCY: User requested immediate help."
+        guard let url = URL(string: "http://\(serverIP):8000/listen") else { return }
+        var request = URLRequest(url: url); request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": msg])
+        
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data = data, data.first != 123 {
+                DispatchQueue.main.async { self.playAudio(data: data) }
+            } else {
+                DispatchQueue.main.async { self.finishTurn() }
             }
+        }.resume()
+    }
+    
+    // --- VITALS ---
+    func processSensorData() {
+        if !isMonitoring { return }
+        guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
+        let hr = Double(metrics.pulse.rate.last?.value ?? 0.0)
+        let br = Double(metrics.breathing.rate.last?.value ?? 0.0)
+        
+        var face = false
+        if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics { face = edge.hasFace }
+        
+        DispatchQueue.main.async {
+            self.currentHeartRate = hr
+            self.currentBreathingRate = br
+            self.isFacePresent = face
+            
+            if hr > 100 && br > 20 { self.isHighStress = true }
+            else { self.isHighStress = false }
         }
     }
 }

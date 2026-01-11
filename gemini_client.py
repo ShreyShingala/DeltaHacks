@@ -142,6 +142,8 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     current_msg = context_info.get("current_message", "")
     extracted = context_info.get("extracted", {})
     recent_events = context_info.get("recent_events", [])
+    stress_detected = context_info.get("stress_detected", False)
+    vitals = context_info.get("vitals", {})
     
     # Build context summary from current extraction
     context_parts = []
@@ -172,26 +174,50 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     
     history_str = " ".join(history_summary[:3]) if history_summary else ""
     
-    # Elderly-focused prompt - optimized for natural speech and uses history
-    prompt = (
-        f"You are a caring companion speaking to {user_name}, an elderly friend.\n\n"
-        f"They just told you: \"{current_msg}\"\n"
-        f"Current context: {context_str}\n"
-    )
-    
-    if history_str:
-        prompt += f"What you know from before: {history_str}\n"
-    
-    prompt += (
-        "\nRespond warmly and naturally:\n"
-        "- Acknowledge what they shared\n"
-        "- If they told you about family, show interest\n"
-        "- If they need help finding something and history shows where it was, remind them\n"
-        "- Keep it friendly and conversational, like talking to a good friend\n"
-        "- Short sentences, under 50 words\n"
-        "- Natural speech only - no formatting\n\n"
-        "Your response:"
-    )
+    # Adjust prompt based on stress/dementia episode detection
+    if stress_detected:
+        # DEMENTIA EPISODE MODE - Focus on calming, grounding, orienting
+        prompt = (
+            f"You are a calming companion helping {user_name}, who is experiencing confusion or distress.\n\n"
+            f"They said: \"{current_msg}\"\n"
+            f"Vitals show elevated stress.\n"
+        )
+        
+        if history_str:
+            prompt += f"What you know: {history_str}\n"
+        
+        prompt += (
+            "\nRespond with calming, grounding techniques:\n"
+            "- Speak slowly and reassuringly\n"
+            "- Help them orient: mention their name, where they are, that they're safe\n"
+            "- If they want to go home but are home, gently remind them they're already home\n"
+            "- Acknowledge their feelings without arguing\n"
+            "- Use short, simple sentences\n"
+            "- Keep it under 35 words\n"
+            "- Natural calming speech only\n\n"
+            "Your calming response:"
+        )
+    else:
+        # NORMAL MODE - Friendly conversational
+        prompt = (
+            f"You are a caring companion speaking to {user_name}, an elderly friend.\n\n"
+            f"They just told you: \"{current_msg}\"\n"
+            f"Current context: {context_str}\n"
+        )
+        
+        if history_str:
+            prompt += f"What you know from before: {history_str}\n"
+        
+        prompt += (
+            "\nRespond warmly and naturally:\n"
+            "- Acknowledge what they shared\n"
+            "- If they told you about family, show interest\n"
+            "- If they need help finding something and history shows where it was, remind them\n"
+            "- Keep it friendly and conversational, like talking to a good friend\n"
+            "- Short sentences, under 40 words\n"
+            "- Natural speech only - no formatting\n\n"
+            "Your response:"
+        )
     
     # Increased max_tokens to allow for longer, more helpful responses
     text = _call_gemini(prompt, max_tokens=200, return_json=False)

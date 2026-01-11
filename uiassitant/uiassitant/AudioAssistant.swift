@@ -32,6 +32,9 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var isMonitoring = false
     private var isProcessingRequest = false // THE SHIELD
     
+    // --- MOVEMENT TRACKING ---
+    private var lastFaceCentroid: CGPoint?
+    
     // Config
     private let silenceThreshold: TimeInterval = 1.5
     private let serverIP = "172.17.79.245" // YOUR LAPTOP IP
@@ -56,40 +59,28 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // OPTIMIZED FOR VOLUME:
-            // 1. .playAndRecord: Required for mic + speaker.
-            // 2. .default: Standard audio processing (often louder than videoChat).
-            // 3. .defaultToSpeaker: The critical option.
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            // VOLUME FIX: Changed mode from .default to .videoChat (Much Louder)
+            try session.setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            
-            // Force the override immediately
             try session.overrideOutputAudioPort(.speaker)
         } catch { print("❌ Session Error: \(error)") }
     }
     
-    // Helper to AGGRESSIVELY force loud speaker
     private func forceSpeaker() {
         do {
             let session = AVAudioSession.sharedInstance()
-            // Reset override to none first (sometimes helps "jiggle" the state)
             try session.overrideOutputAudioPort(.none)
-            // Then force speaker
             try session.overrideOutputAudioPort(.speaker)
-        } catch {
-            print("🔊 Speaker Override Failed: \(error)")
-        }
+        } catch { print("🔊 Speaker Override Failed: \(error)") }
     }
     
     // --- START / STOP ---
     func startPresageMonitoring() {
         isMonitoring = true
-        
         if SmartSpectraVitalsProcessor.shared.processingStatus == .processing {
             startVitalsLoop()
             return
         }
-        
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             SmartSpectraVitalsProcessor.shared.startProcessing()
             SmartSpectraVitalsProcessor.shared.startRecording()
@@ -143,10 +134,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    // 2. START LISTENING
     func startListeningSequence() {
-        if isProcessingRequest { return } // Shield Check
-        
+        if isProcessingRequest { return }
         nukeAudio()
         
         DispatchQueue.main.async {
@@ -174,8 +163,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         } catch { print("❌ Engine Error: \(error)"); return }
         
         recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
-            if self.isProcessingRequest { return } // Shield Check
-            
+            if self.isProcessingRequest { return }
             if let result = result {
                 DispatchQueue.main.async { self.spokenText = result.bestTranscription.formattedString }
                 self.resetSilenceTimer()
@@ -183,10 +171,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    // 3. SILENCE DETECTED
     private func resetSilenceTimer() {
         if isProcessingRequest { return }
-        
         silenceTimer?.invalidate()
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { _ in
             print("🤫 Silence detected. Sending...")
@@ -194,9 +180,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    // 4. SEND DATA
     func sendDataToBackend() {
-        isProcessingRequest = true // ENGAGE SHIELD
+        isProcessingRequest = true
         let messageToSend = self.spokenText
         nukeAudio()
         
@@ -211,14 +196,25 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.spokenText = "Thinking..."
         }
         
+        // Payload with Parsage Vitals
+        let payload: [String: Any] = [
+            "text": messageToSend,
+            "vitals": [
+                "heart_rate": Int(self.currentHeartRate),
+                "breathing_rate": Int(self.currentBreathingRate),
+                "movement_score": Int(self.movementScore),
+                "stress_detected": self.isHighStress
+            ]
+        ]
+        
         guard let url = URL(string: "http://\(serverIP):8000/listen") else {
             isProcessingRequest = false
             return
         }
+        
         var request = URLRequest(url: url); request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["text": messageToSend]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         
         URLSession.shared.dataTask(with: request) { data, _, error in
             if error != nil || data == nil || data?.first == 123 {
@@ -232,19 +228,14 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }.resume()
     }
     
-    // 5. PLAY AUDIO (THE VOLUME FIX)
     func playAudio(data: Data) {
         do {
-            // 1. Force Session Active
             try AVAudioSession.sharedInstance().setActive(true)
+            forceSpeaker() // Apply Loudness Fix
             
-            // 2. FORCE SPEAKER OUTPUT AGGRESSIVELY
-            forceSpeaker()
-            
-            // 3. Setup Player
             audioPlayer = try AVAudioPlayer(data: data)
             audioPlayer?.delegate = self
-            audioPlayer?.volume = 1.0 // Max Volume
+            audioPlayer?.volume = 1.0
             audioPlayer?.prepareToPlay()
             
             let success = audioPlayer?.play() ?? false
@@ -255,8 +246,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
                     self.spokenText = "Speaking..."
                 }
                 
-                // Watchdog
-                let duration = audioPlayer?.duration ?? 2.0
+                let duration = Double(audioPlayer?.duration ?? 2.0)
                 speakingTimer?.invalidate()
                 speakingTimer = Timer.scheduledTimer(withTimeInterval: duration + 1.0, repeats: false) { _ in
                     print("⚠️ Watchdog Reset")
@@ -271,7 +261,6 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    // 6. FINISH
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         print("✅ AI Finished.")
         finishTurn()
@@ -279,11 +268,10 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     func finishTurn() {
         speakingTimer?.invalidate()
-        isProcessingRequest = false // RELEASE SHIELD
+        isProcessingRequest = false
         startListeningSequence()
     }
     
-    // --- EMERGENCY ---
     func triggerEmergency() {
         isProcessingRequest = true
         nukeAudio()
@@ -302,23 +290,60 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }.resume()
     }
     
-    // --- VITALS ---
+    // --- PARSAGE: SAFE VITALS PROCESSING ---
     func processSensorData() {
         if !isMonitoring { return }
         guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
+        
+        // 1. Get Basic Vitals
         let hr = Double(metrics.pulse.rate.last?.value ?? 0.0)
         let br = Double(metrics.breathing.rate.last?.value ?? 0.0)
         
         var face = false
-        if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics { face = edge.hasFace }
+        var currentMovement = 0.0
         
+        // 2. Calculate Movement (Agitation)
+        if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics {
+            face = edge.hasFace
+            if face, let landmarks = edge.face.landmarks.last?.value, !landmarks.isEmpty {
+                // Calculate Center of Face
+                var totalX: Float = 0, totalY: Float = 0
+                for point in landmarks { totalX += point.x; totalY += point.y }
+                let currentCentroid = CGPoint(x: Double(totalX)/Double(landmarks.count), y: Double(totalY)/Double(landmarks.count))
+                
+                // Compare with last frame
+                if let last = lastFaceCentroid {
+                    let dx = currentCentroid.x - last.x
+                    let dy = currentCentroid.y - last.y
+                    currentMovement = sqrt(dx*dx + dy*dy)
+                }
+                lastFaceCentroid = currentCentroid
+            } else {
+                lastFaceCentroid = nil
+            }
+        }
+        
+        // 3. Update UI (Main Thread Only)
         DispatchQueue.main.async {
+            // Smooth the movement score
+            self.movementScore = (self.movementScore * 0.9) + (currentMovement * 0.1)
+            
             self.currentHeartRate = hr
             self.currentBreathingRate = br
             self.isFacePresent = face
             
-            if hr > 100 && br > 20 { self.isHighStress = true }
-            else { self.isHighStress = false }
+            // --- PARSAGE TRIGGER LOGIC ---
+            // Trigger if ANY of these happen (OR Logic)
+            let isPanicking = (hr > 90.0)
+            let isHyperventilating = (br > 20.0)
+            let isAgitated = (self.movementScore > 5.0)
+            
+            if isPanicking || isHyperventilating || isAgitated {
+                self.isHighStress = true
+                // print("⚠️ Parsage Detected: HR:\(Int(hr)) BR:\(Int(br)) MV:\(Int(self.movementScore))")
+            } else {
+                self.isHighStress = false
+            }
         }
     }
 }

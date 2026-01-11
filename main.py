@@ -18,12 +18,26 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 VOICE_ID = "TxGEqnHWrfWFTfGW9XjX"
 DEFAULT_USER = os.getenv("PRESAGE_USER", "alice")
 
+class Vitals(BaseModel):
+    heart_rate: int = None
+    breathing_rate: int = None
+    movement_score: int = None
+    stress_detected: bool = False
+
 class VoiceData(BaseModel):
     text: str
+    vitals: Vitals = None
 
 @app.get("/")
 def read_root():
     return {"status": "Server is ONLINE and ready for signals."}
+
+@app.post("/listennah")
+def receive_voice(data: VoiceData):
+    print("------------------------------------------------")
+    print(f"🎤 IPHONE SAID: {data.text}")
+    print("------------------------------------------------")
+    return {"status": "received", "you_said": data.text}
 
 @app.post("/listenold")
 def receive_voice(data: VoiceData):
@@ -86,12 +100,20 @@ def receive_voice(data: VoiceData):
         print(f"⚠️  Could not retrieve context from DB: {e}")
         context = []  # Use empty context if DB fails
     
+    # Check if user is experiencing stress/dementia episode
+    stress_detected = False
+    if data.vitals and data.vitals.stress_detected:
+        stress_detected = True
+        print("                     ⚠️  STRESS/DEMENTIA EPISODE DETECTED - Using calming approach")
+    
     context_info = {
         "user": DEFAULT_USER,
         "recent_events": context,
         "total_events": len(context),
         "current_message": data.text,
-        "extracted": extracted_info
+        "extracted": extracted_info,
+        "stress_detected": stress_detected,
+        "vitals": data.vitals.dict() if data.vitals else None
     }
     
     gemini_message = generate_assistance(DEFAULT_USER, context_info)

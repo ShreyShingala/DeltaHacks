@@ -5,7 +5,7 @@ import corner_logo from "@/images/corner_logo.png"
 
 const CornerLogo = () => {
   return (
-    <div className="absolute top-0 left-0 z-0 p-0">
+    <div className="absolute top-0 left-0 z-10 p-5">
       <Image src={corner_logo} alt="Corner Logo" width={180} height={180} className="object-contain" />
     </div>
   )

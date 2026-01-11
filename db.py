@@ -1,6 +1,9 @@
 import os
 from datetime import datetime
 from pymongo import MongoClient
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 client = MongoClient(MONGO_URI)
@@ -8,8 +11,15 @@ db = client.get_database("presage_db")
 events = db.get_collection("events")
 
 def save_event(user: str, info: dict) -> None:
-    doc = {"user": user, "info": info, "ts": datetime.utcnow()}
-    events.insert_one(doc)
+    """Save an event to the database. Raises exception if write fails."""
+    try:
+        doc = {"user": user, "info": info, "ts": datetime.utcnow()}
+        result = events.insert_one(doc)
+        print(f"✅ Database write successful - ID: {result.inserted_id}")
+        return result.inserted_id
+    except Exception as e:
+        print(f"❌ Database write failed: {e}")
+        raise  # Re-raise so caller knows it failed
 
 # def get_context_for_user(user: str, limit: int = 20) -> list:
 #     cursor = events.find({"user": user}).sort("ts", -1).limit(limit)

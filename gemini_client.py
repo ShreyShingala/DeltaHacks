@@ -2,13 +2,67 @@ import os
 import json
 import re
 import requests
+import cohere
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ollama configuration
+# Configuration
+USE_COHERE = os.getenv("USE_COHERE", "false").lower() == "true"
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+COHERE_MODEL = "command-a-03-2025"  # Current available model
+
+# Ollama configuration (fallback)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:instruct")  # Default model, can be changed in .env
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:2b")
+
+# Initialize Cohere client
+cohere_client = None
+if USE_COHERE and COHERE_API_KEY:
+    cohere_client = cohere.Client(COHERE_API_KEY)
+    print(f"✅ Cohere client initialized (model: {COHERE_MODEL})")
+else:
+    print(f"⚠️  Using Ollama fallback (USE_COHERE={USE_COHERE})")
+
+
+def _call_cohere(prompt: str, max_tokens: int = 256, return_json: bool = False) -> str:
+    """Call Cohere API. Returns text response.
+    
+    Args:
+        prompt: The prompt to send to Cohere
+        max_tokens: Maximum tokens in response
+        return_json: If True, tries to extract JSON from response. If False, returns plain text.
+    """
+    try:
+        if not cohere_client:
+            return "Cohere client not initialized. Check your API key."
+        
+        response = cohere_client.chat(
+            model=COHERE_MODEL,
+            message=prompt,
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+        
+        text = response.text.strip()
+        
+        if return_json:
+            # Try to extract JSON from the response
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group())
+                    return json.dumps(parsed)
+                except json.JSONDecodeError:
+                    pass
+        
+        return text
+        
+    except Exception as e:
+        print(f"❌ Cohere API error: {e}")
+        if return_json:
+            return json.dumps({"error": str(e), "raw": prompt})
+        return "I encountered an error while processing your request. Please try again."
 
 
 def _call_ollama(prompt: str, max_tokens: int = 256, return_json: bool = False) -> str:
@@ -86,6 +140,14 @@ def _call_ollama(prompt: str, max_tokens: int = 256, return_json: bool = False) 
         return f"I encountered an error while processing your request: {str(e)}"
 
 
+def _call_llm(prompt: str, max_tokens: int = 256, return_json: bool = False) -> str:
+    """Unified LLM caller - routes to Cohere or Ollama based on USE_COHERE flag."""
+    if USE_COHERE:
+        return _call_cohere(prompt, max_tokens, return_json)
+    else:
+        return _call_ollama(prompt, max_tokens, return_json)
+
+
 def extract_important_info(message: str) -> dict:
     """Ask the model to extract important fields from a free-form message.
 
@@ -106,7 +168,7 @@ def extract_important_info(message: str) -> dict:
         "Return ONLY valid JSON, no other text."
     )
     
-    text = _call_ollama(prompt, max_tokens=300, return_json=True)
+    text = _call_llm(prompt, max_tokens=300, return_json=True)
 
     try:
         parsed = json.loads(text)
@@ -144,6 +206,11 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     stress_detected = context_info.get("stress_detected", False)
     vitals = context_info.get("vitals", {})
     
+    # Check if this is an ACTIVE stress alert (not just aftermath)
+    # Stress mode should only activate for ALERT messages with vital signs
+    is_alert_message = current_msg.upper().startswith("ALERT:")
+    active_stress = stress_detected and is_alert_message
+    
     # Build context summary from current extraction
     context_parts = []
     if extracted.get("concern"):
@@ -157,68 +224,66 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     
     context_str = ", ".join(context_parts) if context_parts else "general request"
     
-    # Build history summary from MongoDB - focus on key information
-    history_summary = []
-    for event in recent_events[:5]:  # Last 5 interactions
+    # Build conversation history from last 5 messages
+    history_messages = []
+    for event in recent_events[:5]:  # Get last 5 messages
         info = event.get("info", {})
-        raw_msg = info.get("raw", "")
-        
-        # Look for key-related information in past interactions
+        raw_msg = info.get("raw") or info.get("notes") or info.get("original_message", "")
         if raw_msg:
-            # Extract useful patterns from history
-            if "found" in raw_msg.lower() and "key" in raw_msg.lower():
-                history_summary.append(f"Previously: {raw_msg}")
-            elif "put" in raw_msg.lower() and "key" in raw_msg.lower():
-                history_summary.append(f"Previously: {raw_msg}")
+            history_messages.append(raw_msg)
     
-    history_str = " ".join(history_summary[:3]) if history_summary else ""
+    history_str = "\n".join([f"- {msg}" for msg in history_messages]) if history_messages else ""
     
-    # Adjust prompt based on stress/dementia episode detection
-    if stress_detected:
+    # Debug logging
+    print(f"📚 Past 5 messages:\n{history_str if history_str else 'None'}")
+    
+    # Adjust prompt based on ACTIVE stress/dementia episode detection
+    if active_stress:
         # DEMENTIA EPISODE MODE - Focus on calming, grounding, orienting
+        # Only use this for ACTIVE alerts, not follow-up questions
         prompt = (
-            f"You are a calming companion helping {user_name}, who is experiencing confusion or distress.\n\n"
+            f"You are helping {user_name}, an elderly person with severe short-term and long-term memory loss who is experiencing a distressing dementia episode.\n\n"
             f"They said: \"{current_msg}\"\n"
-            f"Vitals show elevated stress.\n"
+            f"Their vitals show they are highly stressed and confused.\n"
         )
         
         if history_str:
             prompt += f"What you know: {history_str}\n"
         
         prompt += (
-            "\nRespond with calming, grounding techniques:\n"
-            "- Speak slowly and reassuringly\n"
-            "- Help them orient: mention their name, where they are, that they're safe\n"
-            "- If they want to go home but are home, gently remind them they're already home\n"
-            "- Acknowledge their feelings without arguing\n"
-            "- Use short, simple sentences\n"
-            "- Keep it under 35 words\n"
-            "- Natural calming speech only\n\n"
+            "\nYour goal is to help them relax and calm down:\n"
+            "- Use their name and speak slowly with a reassuring, gentle tone\n"
+            "- Ground them in reality: remind them they're safe at home\n"
+            "- If they're asking a question, answer it briefly while also reassuring them\n"
+            "- Validate their feelings without arguing or correcting harshly\n"
+            "- Help reduce their anxiety with simple, comforting words\n"
+            "- Keep sentences very short and simple due to their memory impairment\n\n"
+            "CRITICAL: Your response MUST be under 25 words total. Maximum 2 sentences.\n"
             "Your calming response:"
         )
     else:
         # NORMAL MODE - Friendly conversational
         prompt = (
-            f"You are a caring companion speaking to {user_name}, an elderly friend.\n\n"
+            f"You are a caring companion speaking to {user_name}, an elderly person with short-term and long-term memory loss.\n\n"
             f"They just told you: \"{current_msg}\"\n"
             f"Current context: {context_str}\n"
         )
         
         if history_str:
-            prompt += f"What you know from before: {history_str}\n"
+            prompt += f"\nTHEIR RECENT CONVERSATION HISTORY (last 5 messages):\n{history_str}\n"
+            prompt += "\n🚨 CRITICAL: If they're asking about something they said in recent history, answer with the SPECIFIC FACT from history. Don't guess or suggest - tell them what they actually said.\n"
         
         prompt += (
-            "\nRespond warmly and naturally:\n"
-            "- Acknowledge what they shared\n"
-            "- If they told you about family, show interest\n"
-            "- If they need help finding something and history shows where it was, remind them\n"
-            "- Keep it friendly and conversational, like talking to a good friend\n"
-            "- Short sentences, under 40 words\n"
-            "- Natural speech only - no formatting\n\n"
+            "\nRespond warmly and helpfully:\n"
+            "- Use their PREVIOUS INFORMATION to give specific factual answers, not guesses\n"
+            "- If no previous information exists, then help them figure it out\n"
+            "- Acknowledge what they shared with empathy\n"
+            "- Natural, conversational speech only - no formatting\n\n"
+            "CRITICAL: Your response MUST be under 30 words total. Maximum 2-3 short sentences.\n"
             "Your response:"
         )
     
-    text = _call_ollama(prompt, max_tokens=200, return_json=False)
+    text = _call_llm(prompt, max_tokens=50, return_json=False)
     
     # Better fallback if generation fails - make it context-aware
     if not text or "error" in text.lower() or "couldn't" in text.lower():

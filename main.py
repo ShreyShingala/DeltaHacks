@@ -38,7 +38,13 @@ def receive_voice(data: VoiceData):
     print("------------------------------------------------")
     print(f"🎤 IPHONE SAID: {data.text}")
     print("------------------------------------------------")
-    return {"status": "received", "you_said": data.text}
+
+    stress_detected = False
+    if data.vitals and data.vitals.stress_detected:
+        stress_detected = True
+        print("                     ⚠️  STRESS/DEMENTIA EPISODE DETECTED - Using calming approach")
+        print("                 ")
+        print("------------------------------------------------")
 
 @app.post("/listenold")
 def receive_voice(data: VoiceData):
@@ -116,7 +122,7 @@ def receive_voice(data: VoiceData):
     if data.vitals and data.vitals.stress_detected:
         stress_detected = True
         print("                     ⚠️  STRESS/DEMENTIA EPISODE DETECTED - Using calming approach")
-        print(data.vitals)
+        print("                 ")
         print("------------------------------------------------")
         
     

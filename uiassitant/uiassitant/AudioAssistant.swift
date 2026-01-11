@@ -9,7 +9,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // --- 🛠️ TEST MODE 🛠️ ---
     // TRUE  = Logs to /listennah (No Audio, Saves Credits)
     // FALSE = Sends to /listen (Real Audio response)
-    private let useTestMode = true
+    private let useTestMode = false
     
     // --- UI VARIABLES ---
     @Published var spokenText = "Initializing..."
@@ -37,10 +37,13 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var isMonitoring = false
     private var isProcessingRequest = false
     
-    // --- MOVEMENT TRACKING ---
+    // --- MOVEMENT & FACE TRACKING ---
     private var lastFaceCentroid: CGPoint?
     private var lastInterventionTime: Date = Date.distantPast
     private var sessionStartTime: Date?
+    
+    // 30-Second Cooldown for Face Warning
+    private var lastFaceWarningTime: Date = Date.distantPast
     
     // Config
     private let silenceThreshold: TimeInterval = 1.5
@@ -53,7 +56,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         SmartSpectraVitalsProcessor.shared.stopProcessing()
         SmartSpectraVitalsProcessor.shared.stopRecording()
         
-        // 2. NEW API KEY
+        // 2. API KEY
         let apiKey = "NSphZrIStb8J6ZBtujZbaaeKe3sAe2AR5SZHtskh"
         SmartSpectraSwiftSDK.shared.setApiKey(apiKey)
         SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
@@ -208,6 +211,15 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         sendPayload(text: messageToSend, isAutoTrigger: false)
     }
     
+    // --- Trigger Functions ---
+    func triggerFaceMissingWarning() {
+        isProcessingRequest = true
+        nukeAudio()
+        print("🚨 FACE MISSING WARNING")
+        let systemMsg = "ALERT: Face not detected. Say exactly: 'Hey, your face is not on the screen, you should put it on for assistance.'"
+        sendPayload(text: systemMsg, isAutoTrigger: true)
+    }
+    
     func triggerAutoIntervention(reason: String) {
         isProcessingRequest = true
         nukeAudio()
@@ -327,6 +339,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func processSensorData() {
         if !isMonitoring { return }
         
+        // 5s Warm-up
         if let start = sessionStartTime, Date().timeIntervalSince(start) < 5.0 { return }
         
         guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
@@ -341,7 +354,6 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics {
             face = edge.hasFace
             
-            // Calculate Centroid
             if face, let landmarks = edge.face.landmarks.last?.value, !landmarks.isEmpty {
                 var totalX: Float = 0, totalY: Float = 0
                 let count = Double(landmarks.count)
@@ -355,9 +367,11 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
                         let dy = currentCentroid.y - last.y
                         currentMovement = sqrt(dx*dx + dy*dy)
                         
-                        // Shake Detection
-                        if abs(dx) > 10.0 || abs(dy) > 10.0 {
+                        // Shake Detection (DUMPED SENSITIVITY DOWN)
+                        // Old: 10.0 -> New: 35.0 (Must shake hard)
+                        if abs(dx) > 35.0 || abs(dy) > 35.0 {
                             isShakingViolently = true
+                            print("⚠️ VIOLENT SHAKE: \(dx), \(dy)")
                         }
                     }
                     lastFaceCentroid = currentCentroid
@@ -370,7 +384,15 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // Smoothed Movement
+            // 1. FACE MISSING (30s Cooldown)
+            if !face {
+                if !self.isProcessingRequest && Date().timeIntervalSince(self.lastFaceWarningTime) > 30.0 {
+                    self.lastFaceWarningTime = Date()
+                    self.triggerFaceMissingWarning()
+                }
+            }
+            
+            // 2. Smoothed Movement
             self.movementScore = (self.movementScore * 0.8) + (currentMovement * 0.2)
             
             self.currentHeartRate = hr
@@ -379,13 +401,16 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             
             let isPanicking = (hr > 90.0)
             let isHyperventilating = (br > 20.0)
-            let isAgitated = (self.movementScore > 5.0 || isShakingViolently)
+            
+            // Movement Threshold (DUMPED SENSITIVITY DOWN)
+            // Old: 5.0 -> New: 12.0
+            let isAgitated = (self.movementScore > 12.0 || isShakingViolently)
             
             if isPanicking || isHyperventilating || isAgitated {
                 self.isHighStress = true
                 
-                // Auto-Trigger (Every 30s)
-                if !self.isProcessingRequest && Date().timeIntervalSince(self.lastInterventionTime) > 10.0 {
+                // Auto-Trigger (30s Cooldown for general stress)
+                if !self.isProcessingRequest && Date().timeIntervalSince(self.lastInterventionTime) > 30.0 {
                     self.lastInterventionTime = Date()
                     
                     if isShakingViolently { self.triggerAutoIntervention(reason: "Violent Head Shaking") }

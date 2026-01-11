@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
       if (info.time) extractedFields.time = info.time
       if (info.emotion) extractedFields.emotion = info.emotion
       // Only include notes if it's different from the original message (to avoid duplication)
-      if (info.notes && info.notes !== originalMessage && info.notes.trim()) {
+      if (info.notes && typeof info.notes === 'string' && info.notes !== originalMessage && info.notes.trim()) {
         extractedFields.notes = info.notes
       }
       

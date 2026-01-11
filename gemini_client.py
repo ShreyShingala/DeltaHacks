@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from dotenv import load_dotenv
 import google.generativeai as genai
 
@@ -33,7 +34,10 @@ def _call_gemini(prompt: str, max_tokens: int = 256, return_json: bool = False) 
             max_output_tokens=max_tokens,
             temperature=0.7,
         )
-        response = model.generate_content(prompt, generation_config=generation_config)
+        response = model.generate_content(
+            prompt, 
+            generation_config=generation_config
+        )
         
         # Handle safety-filtered responses (finish_reason = 2 means SAFETY)
         if not response.candidates:
@@ -89,22 +93,31 @@ def extract_important_info(message: str) -> dict:
 
     Returns a dict with extracted fields when possible; always returns a dict.
     """
-    prompt = (
-        "Extract important information from the user's message and return valid JSON only. "
-        "Return keys (when present): intent, entities, stress_level, location, time, notes. "
-        f"User message: '''{message}'''"
-    )
+    # Very minimal prompt to avoid safety filter triggers
+    prompt = f"Extract JSON: intent, entities, location, time, notes. Input: {message}"
     text = _call_gemini(prompt, max_tokens=256, return_json=True)
 
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
+            # If Gemini returned an error, don't return it - use fallback instead
+            if "error" in parsed:
+                # Gemini was blocked, return minimal structure instead
+                return {
+                    "raw": message,
+                    "intent": "note"
+                }
+            # Success - return the parsed result
             return parsed
     except Exception:
+        # JSON parsing failed, use fallback
         pass
 
-    # If parsing failed, return a minimal structure
-    return {"raw": message}
+    # Fallback: return minimal structure (safe, no error keys)
+    return {
+        "raw": message,
+        "intent": "note"
+    }
 
 
 def generate_assistance(user_name: str, context_info: dict) -> str:
@@ -112,12 +125,30 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
 
     The prompt is intentionally small: the app should later use a low-latency Gemini Flash model.
     """
+    # Simplify context - only include essential info to avoid filter triggers
+    context_clean = {
+        "total_events": context_info.get("total_events", 0),
+        "user": context_info.get("user", user_name)
+    }
+    
+    # Very simple, neutral prompt
     prompt = (
-        "You are a calm, gentle assistant helping someone who may be experiencing stress or confusion. "
-        "Using the provided context, generate a few short, reassuring sentences to help ground them. "
-        "Tell them where they are, what time it is, and what they should do next. Be warm, clear, and kind.\n\n"
-        f"User: {user_name}\nContext: {json.dumps(context_info)}\n\nOutput:" 
+        f"Write a brief, friendly message for {user_name}. "
+        f"They have {context_clean['total_events']} logged interactions. "
+        "Be warm and helpful. Keep it under 75 words."
     )
+    
     # Increased max_tokens to allow for longer, more helpful responses
     text = _call_gemini(prompt, max_tokens=512, return_json=False)
-    return (text or "Take a deep breath — you're okay right now.").strip()
+    
+    # Fallback if generation fails
+    if not text or "couldn't generate" in text.lower() or "content filter" in text.lower():
+        return f"Hello {user_name}! You have {context_clean['total_events']} logged interactions. How can I help you today?"
+    
+    # Clean up newlines - replace newlines with spaces, collapse multiple spaces
+    if text:
+        text = re.sub(r'\n+', ' ', text)  # Replace newlines with space
+        text = re.sub(r'\s+', ' ', text)  # Replace multiple spaces with single space
+        text = text.strip()
+    
+    return (text or f"Hello {user_name}! How can I help you today?").strip()

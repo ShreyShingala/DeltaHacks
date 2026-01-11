@@ -41,11 +41,32 @@ def voice_request(data: VoiceData):
     # Extract important information using Gemini
     extracted = extract_important_info(message)
     
-    # Store in database
-    save_event(DEFAULT_USER, extracted)
+    # Check if there's a Gemini error - don't save errors to database
+    has_error = "error" in extracted or extracted.get("error") is not None
+    
+    if has_error:
+        print(f"⚠️  Gemini error detected - skipping database write")
+        print(f"📊 EXTRACTED INFO: {extracted}")
+        print("="*60 + "\n")
+        return {
+            "status": "error",
+            "extracted_info": extracted,
+            "stored": False,
+            "message": "Gemini error occurred, data not saved to database"
+        }
+    
+    # Include the original prompt message in the saved data
+    event_data = {
+        "original_message": message,
+        **extracted  # Include all extracted fields
+    }
+    
+    # Store in database (includes original message + extracted info)
+    save_event(DEFAULT_USER, event_data)
     
     # Print extracted info to terminal
     print(f"📊 EXTRACTED INFO: {extracted}")
+    print(f"💾 SAVED TO DB: Original message + extracted info")
     print("="*60 + "\n")
     
     return {

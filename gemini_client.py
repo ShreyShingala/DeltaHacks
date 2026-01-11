@@ -224,18 +224,43 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     
     context_str = ", ".join(context_parts) if context_parts else "general request"
     
-    # Build conversation history from last 5 messages
+    # Build conversation history from last 5 messages with timestamps
     history_messages = []
     for event in recent_events[:5]:  # Get last 5 messages
         info = event.get("info", {})
+        timestamp = event.get("ts")
         raw_msg = info.get("raw") or info.get("notes") or info.get("original_message", "")
+        
         if raw_msg:
-            history_messages.append(raw_msg)
+            # Format timestamp for readability
+            if timestamp:
+                from datetime import datetime
+                # Calculate how long ago
+                time_diff = datetime.utcnow() - timestamp
+                if time_diff.seconds < 60:
+                    time_ago = "just now"
+                elif time_diff.seconds < 3600:
+                    mins = time_diff.seconds // 60
+                    time_ago = f"{mins} minute{'s' if mins != 1 else ''} ago"
+                elif time_diff.days == 0:
+                    hours = time_diff.seconds // 3600
+                    time_ago = f"{hours} hour{'s' if hours != 1 else ''} ago"
+                else:
+                    time_ago = f"{time_diff.days} day{'s' if time_diff.days != 1 else ''} ago"
+                
+                # Check if this was a stress/dementia episode
+                was_stress = info.get("stress_detected", False)
+                stress_marker = " [STRESS EPISODE]" if was_stress else ""
+                
+                history_messages.append(f"[{time_ago}{stress_marker}] {raw_msg}")
+            else:
+                history_messages.append(f"- {raw_msg}")
     
-    history_str = "\n".join([f"- {msg}" for msg in history_messages]) if history_messages else ""
+    history_str = "\n".join(history_messages) if history_messages else ""
     
-    # Debug logging
-    print(f"📚 Past 5 messages:\n{history_str if history_str else 'None'}")
+    # Print history for debugging
+    if history_str:
+        print(f"📚 History being sent to model:\n{history_str}\n")
     
     # Adjust prompt based on ACTIVE stress/dementia episode detection
     if active_stress:
@@ -264,21 +289,22 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
     else:
         # NORMAL MODE - Friendly conversational
         prompt = (
-            f"You are a caring companion speaking to {user_name}, an elderly person with short-term and long-term memory loss.\n\n"
-            f"They just told you: \"{current_msg}\"\n"
-            f"Current context: {context_str}\n"
+            f"You are a caring companion speaking to {user_name}, an elderly person with memory challenges.\n\n"
+            f"They just said: \"{current_msg}\"\n"
         )
         
         if history_str:
-            prompt += f"\nTHEIR RECENT CONVERSATION HISTORY (last 5 messages):\n{history_str}\n"
-            prompt += "\n🚨 CRITICAL: If they're asking about something they said in recent history, answer with the SPECIFIC FACT from history. Don't guess or suggest - tell them what they actually said.\n"
+            prompt += f"\nFor context, here's their recent conversation history with timestamps:\n{history_str}\n"
+            prompt += "\nNOTE: Messages marked [STRESS EPISODE] were during past dementia episodes. Don't assume current stress unless their current message indicates it.\n"
         
         prompt += (
-            "\nRespond warmly and helpfully:\n"
-            "- Use their PREVIOUS INFORMATION to give specific factual answers, not guesses\n"
-            "- If no previous information exists, then help them figure it out\n"
-            "- Acknowledge what they shared with empathy\n"
-            "- Natural, conversational speech only - no formatting\n\n"
+            "\nRespond naturally and warmly:\n"
+            "- If they're asking about something from their history, reference it specifically\n"
+            "- If they're just chatting normally, respond conversationally without mentioning history\n"
+            "- Be engaged and natural - let the conversation flow\n"
+            "- Don't summarize unless they explicitly ask\n"
+            "- Pay attention to timestamps - old stress episodes are NOT current issues\n"
+            "- Use natural speech only - no formatting\n\n"
             "CRITICAL: Your response MUST be under 30 words total. Maximum 2-3 short sentences.\n"
             "Your response:"
         )

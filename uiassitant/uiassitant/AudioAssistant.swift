@@ -7,8 +7,6 @@ import SmartSpectraSwiftSDK
 
 class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // --- 🛠️ TEST MODE 🛠️ ---
-    // TRUE  = Logs to /listennah (No Audio, Saves Credits)
-    // FALSE = Sends to /listen (Real Audio response)
     private let useTestMode = false
     
     // --- UI VARIABLES ---
@@ -41,8 +39,6 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var lastFaceCentroid: CGPoint?
     private var lastInterventionTime: Date = Date.distantPast
     private var sessionStartTime: Date?
-    
-    // 30-Second Cooldown for Face Warning
     private var lastFaceWarningTime: Date = Date.distantPast
     
     // Config
@@ -57,7 +53,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         SmartSpectraVitalsProcessor.shared.stopRecording()
         
         // 2. API KEY
-        let apiKey = "NSphZrIStb8J6ZBtujZbaaeKe3sAe2AR5SZHtskh"
+        let apiKey = "NWncIcBx6saQzRKpuW7m91uRO49MMOlo5fdc91Dm"
         SmartSpectraSwiftSDK.shared.setApiKey(apiKey)
         SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
         SmartSpectraSwiftSDK.shared.setCameraPosition(.front)
@@ -224,7 +220,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         isProcessingRequest = true
         nukeAudio()
         print("🚨 AUTO-TRIGGER: \(reason)")
-        let systemMsg = "ALERT: User is silent but vital signs indicate \(reason). Initiate calming protocol immediately."
+        let systemMsg = "ALERT: User is silent but vital signs indicate \(reason). Confirm if they are fine or need asstance"
         sendPayload(text: systemMsg, isAutoTrigger: true)
     }
     
@@ -367,9 +363,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
                         let dy = currentCentroid.y - last.y
                         currentMovement = sqrt(dx*dx + dy*dy)
                         
-                        // Shake Detection (DUMPED SENSITIVITY DOWN)
-                        // Old: 10.0 -> New: 35.0 (Must shake hard)
-                        if abs(dx) > 35.0 || abs(dy) > 35.0 {
+                        // Shake Detection (Must be a massive movement now - 50.0)
+                        if abs(dx) > 50.0 || abs(dy) > 50.0 {
                             isShakingViolently = true
                             print("⚠️ VIOLENT SHAKE: \(dx), \(dy)")
                         }
@@ -401,22 +396,20 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             
             let isPanicking = (hr > 90.0)
             let isHyperventilating = (br > 20.0)
-            
-            // Movement Threshold (DUMPED SENSITIVITY DOWN)
-            // Old: 5.0 -> New: 12.0
             let isAgitated = (self.movementScore > 12.0 || isShakingViolently)
             
             if isPanicking || isHyperventilating || isAgitated {
                 self.isHighStress = true
                 
-                // Auto-Trigger (30s Cooldown for general stress)
-                if !self.isProcessingRequest && Date().timeIntervalSince(self.lastInterventionTime) > 30.0 {
+                // Auto-Trigger (60s Cooldown & Check Speaking)
+                if !self.isProcessingRequest && !self.isSpeaking && Date().timeIntervalSince(self.lastInterventionTime) > 60.0 {
                     self.lastInterventionTime = Date()
                     
-                    if isShakingViolently { self.triggerAutoIntervention(reason: "Violent Head Shaking") }
-                    else if isAgitated { self.triggerAutoIntervention(reason: "Physical Agitation") }
-                    else if isPanicking { self.triggerAutoIntervention(reason: "High Heart Rate") }
-                    else { self.triggerAutoIntervention(reason: "Hyperventilation") }
+                    // --- PRIORITY SWAP: VITALS FIRST, THEN MOVEMENT ---
+                    if isPanicking { self.triggerAutoIntervention(reason: "High Heart Rate") }
+                    else if isHyperventilating { self.triggerAutoIntervention(reason: "Hyperventilation") }
+                    else if isShakingViolently { self.triggerAutoIntervention(reason: "Violent Head Shaking") }
+                    else { self.triggerAutoIntervention(reason: "Physical Agitation") }
                 }
             } else {
                 self.isHighStress = false

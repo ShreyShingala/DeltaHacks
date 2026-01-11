@@ -65,7 +65,7 @@ def is_there():
 def assistance():
     """Generate calming assistance messages using all stored context from database."""
     # Get all stored context for the user
-    context = get_context_for_user(DEFAULT_USER, limit=20)
+    context = get_context_for_user(DEFAULT_USER, limit=2000)
     
     # Prepare context for Gemini
     context_summary = {

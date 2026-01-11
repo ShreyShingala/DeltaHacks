@@ -30,10 +30,12 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var silenceTimer: Timer?
     private var speakingTimer: Timer?
     private var isMonitoring = false
-    private var isProcessingRequest = false // THE SHIELD
+    private var isProcessingRequest = false // Shield
     
-    // --- MOVEMENT TRACKING ---
+    // --- MOVEMENT & TRIGGERS ---
     private var lastFaceCentroid: CGPoint?
+    private var lastInterventionTime: Date = Date.distantPast // COOLDOWN
+    private var sessionStartTime: Date? // WARM-UP TIMER
     
     // Config
     private let silenceThreshold: TimeInterval = 1.5
@@ -47,20 +49,18 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
         SmartSpectraSwiftSDK.shared.setCameraPosition(.front)
         
-        // Initial Audio Setup
         configureAudioSession()
         
-        // Auto-start
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.startListeningSequence()
         }
     }
     
+    // --- 1. LOUD AUDIO CONFIGURATION ---
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // VOLUME FIX: Changed mode from .default to .videoChat (Much Louder)
-            try session.setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             try session.overrideOutputAudioPort(.speaker)
         } catch { print("❌ Session Error: \(error)") }
@@ -71,12 +71,14 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let session = AVAudioSession.sharedInstance()
             try session.overrideOutputAudioPort(.none)
             try session.overrideOutputAudioPort(.speaker)
-        } catch { print("🔊 Speaker Override Failed: \(error)") }
+        } catch { print("🔊 Speaker Override Failed") }
     }
     
     // --- START / STOP ---
     func startPresageMonitoring() {
         isMonitoring = true
+        sessionStartTime = Date() // START WARM-UP TIMER
+        
         if SmartSpectraVitalsProcessor.shared.processingStatus == .processing {
             startVitalsLoop()
             return
@@ -111,7 +113,6 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func nukeAudio() {
         silenceTimer?.invalidate()
         speakingTimer?.invalidate()
-        
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
@@ -160,6 +161,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         engine.prepare()
         do {
             try engine.start()
+            forceSpeaker()
         } catch { print("❌ Engine Error: \(error)"); return }
         
         recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
@@ -191,14 +193,25 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             return
         }
         
+        sendPayload(text: messageToSend, isAutoTrigger: false)
+    }
+    
+    func triggerAutoIntervention(reason: String) {
+        isProcessingRequest = true
+        nukeAudio()
+        print("🚨 AUTO-TRIGGER: \(reason)")
+        let systemMsg = "ALERT: User is silent but vital signs indicate \(reason). Initiate calming protocol immediately."
+        sendPayload(text: systemMsg, isAutoTrigger: true)
+    }
+    
+    func sendPayload(text: String, isAutoTrigger: Bool) {
         DispatchQueue.main.async {
             self.isSpeaking = true
-            self.spokenText = "Thinking..."
+            self.spokenText = isAutoTrigger ? "Sensing Distress..." : "Thinking..."
         }
         
-        // Payload with Parsage Vitals
         let payload: [String: Any] = [
-            "text": messageToSend,
+            "text": text,
             "vitals": [
                 "heart_rate": Int(self.currentHeartRate),
                 "breathing_rate": Int(self.currentBreathingRate),
@@ -231,7 +244,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func playAudio(data: Data) {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            forceSpeaker() // Apply Loudness Fix
+            forceSpeaker()
             
             audioPlayer = try AVAudioPlayer(data: data)
             audioPlayer?.delegate = self
@@ -273,45 +286,35 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     
     func triggerEmergency() {
-        isProcessingRequest = true
-        nukeAudio()
-        let msg = "EMERGENCY: User requested immediate help."
-        guard let url = URL(string: "http://\(serverIP):8000/listen") else { return }
-        var request = URLRequest(url: url); request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": msg])
-        
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            if let data = data, data.first != 123 {
-                DispatchQueue.main.async { self.playAudio(data: data) }
-            } else {
-                DispatchQueue.main.async { self.finishTurn() }
-            }
-        }.resume()
+        triggerAutoIntervention(reason: "User Requested Help")
     }
     
-    // --- PARSAGE: SAFE VITALS PROCESSING ---
+    // --- SAFE VITALS & WARM-UP LOGIC ---
     func processSensorData() {
         if !isMonitoring { return }
+        
+        // --- 1. WARM-UP CHECK (Prevents False Start) ---
+        // If the session is less than 5 seconds old, ignore data.
+        if let start = sessionStartTime, Date().timeIntervalSince(start) < 5.0 {
+            // print("⏳ Warming up sensors...")
+            return
+        }
+        
         guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
         
-        // 1. Get Basic Vitals
         let hr = Double(metrics.pulse.rate.last?.value ?? 0.0)
         let br = Double(metrics.breathing.rate.last?.value ?? 0.0)
         
         var face = false
         var currentMovement = 0.0
         
-        // 2. Calculate Movement (Agitation)
         if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics {
             face = edge.hasFace
             if face, let landmarks = edge.face.landmarks.last?.value, !landmarks.isEmpty {
-                // Calculate Center of Face
                 var totalX: Float = 0, totalY: Float = 0
                 for point in landmarks { totalX += point.x; totalY += point.y }
                 let currentCentroid = CGPoint(x: Double(totalX)/Double(landmarks.count), y: Double(totalY)/Double(landmarks.count))
                 
-                // Compare with last frame
                 if let last = lastFaceCentroid {
                     let dx = currentCentroid.x - last.x
                     let dy = currentCentroid.y - last.y
@@ -323,24 +326,27 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             }
         }
         
-        // 3. Update UI (Main Thread Only)
         DispatchQueue.main.async {
-            // Smooth the movement score
             self.movementScore = (self.movementScore * 0.9) + (currentMovement * 0.1)
-            
             self.currentHeartRate = hr
             self.currentBreathingRate = br
             self.isFacePresent = face
             
-            // --- PARSAGE TRIGGER LOGIC ---
-            // Trigger if ANY of these happen (OR Logic)
+            // --- TRIGGER LOGIC ---
             let isPanicking = (hr > 90.0)
             let isHyperventilating = (br > 20.0)
             let isAgitated = (self.movementScore > 5.0)
             
             if isPanicking || isHyperventilating || isAgitated {
                 self.isHighStress = true
-                // print("⚠️ Parsage Detected: HR:\(Int(hr)) BR:\(Int(br)) MV:\(Int(self.movementScore))")
+                
+                if !self.isProcessingRequest && Date().timeIntervalSince(self.lastInterventionTime) > 10.0 {
+                    self.lastInterventionTime = Date()
+                    
+                    if isPanicking { self.triggerAutoIntervention(reason: "High Heart Rate (Panic)") }
+                    else if isHyperventilating { self.triggerAutoIntervention(reason: "Hyperventilation") }
+                    else { self.triggerAutoIntervention(reason: "Physical Agitation") }
+                }
             } else {
                 self.isHighStress = false
             }

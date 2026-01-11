@@ -105,6 +105,9 @@ def receive_voice(data: VoiceData):
     if data.vitals and data.vitals.stress_detected:
         stress_detected = True
         print("                     ⚠️  STRESS/DEMENTIA EPISODE DETECTED - Using calming approach")
+        print(data.vitals)
+        print("------------------------------------------------")
+        
     
     context_info = {
         "user": DEFAULT_USER,

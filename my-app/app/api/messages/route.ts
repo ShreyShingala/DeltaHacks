@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import clientPromise from "@/lib/mongodb"
 
+const BOOL_DEBUG = false;
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams
@@ -22,17 +24,25 @@ export async function GET(request: NextRequest) {
     // Map events to message format for frontend
     const messages = events.map((event: any) => {
       const info = event.info || {}
-      const originalMessage = info.original_message || info.raw || ""
+      const originalMessage = info.raw || ""
       const content = originalMessage || JSON.stringify(info)
       
-      return {
-        _id: event._id?.toString(),
-        content: content,
-        timestamp: event.ts || new Date(),
-        patientId: event.user || user,
-        sender: "User",
-        type: info.intent || "note",
-        originalData: info, // Include full info for debugging
+      if (BOOL_DEBUG) {
+        return {
+          _id: event._id?.toString(),
+          content: content,
+          timestamp: event.ts || new Date(),
+          patientId: event.user || user,
+          sender: "User",
+          type: info.intent || "note",
+          originalData: info, // Include full info for debugging
+        }
+      } else {
+        return {
+          timestamp: event.ts || new Date(),
+          sender: "User",
+          content: originalMessage,
+        }
       }
     })
 

@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-client = MongoClient(MONGO_URI)
+# Add tlsAllowInvalidCertificates for macOS SSL certificate issues
+client = MongoClient(MONGO_URI, tlsAllowInvalidCertificates=True)
 db = client.get_database("presage_db")
 events = db.get_collection("events")
 

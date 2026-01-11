@@ -93,9 +93,22 @@ def extract_important_info(message: str) -> dict:
 
     Returns a dict with extracted fields when possible; always returns a dict.
     """
-    # Very minimal prompt to avoid safety filter triggers
-    prompt = f"Extract JSON: intent, entities, location, time, notes. Input: {message}"
-    text = _call_gemini(prompt, max_tokens=256, return_json=True)
+    # Prompt optimized for elderly assistance - extract key information
+    prompt = (
+        "You are helping an elderly person. Extract key information from their message into JSON format.\n"
+        "Fields to extract (if present):\n"
+        "- intent: what they need (help, reminder, information, etc)\n"
+        "- concern: any worry or problem mentioned\n"
+        "- people: names of people mentioned\n"
+        "- location: places mentioned (home, store, address, etc)\n"
+        "- time: time or date references\n"
+        "- items: objects they're looking for or need\n"
+        "- emotion: how they seem to be feeling\n"
+        "- notes: brief summary\n\n"
+        f"Message: {message}\n\n"
+        "Return only valid JSON."
+    )
+    text = _call_gemini(prompt, max_tokens=300, return_json=True)
 
     try:
         parsed = json.loads(text)
@@ -125,30 +138,96 @@ def generate_assistance(user_name: str, context_info: dict) -> str:
 
     The prompt is intentionally small: the app should later use a low-latency Gemini Flash model.
     """
-    # Simplify context - only include essential info to avoid filter triggers
-    context_clean = {
-        "total_events": context_info.get("total_events", 0),
-        "user": context_info.get("user", user_name)
-    }
+    # Get current message and extracted info for context
+    current_msg = context_info.get("current_message", "")
+    extracted = context_info.get("extracted", {})
+    recent_events = context_info.get("recent_events", [])
     
-    # Very simple, neutral prompt
+    # Build context summary from current extraction
+    context_parts = []
+    if extracted.get("concern"):
+        context_parts.append(f"Concern: {extracted['concern']}")
+    if extracted.get("items"):
+        context_parts.append(f"Looking for: {extracted['items']}")
+    if extracted.get("location"):
+        context_parts.append(f"Location: {extracted['location']}")
+    if extracted.get("people"):
+        context_parts.append(f"People: {extracted['people']}")
+    
+    context_str = ", ".join(context_parts) if context_parts else "general request"
+    
+    # Build history summary from MongoDB - focus on key information
+    history_summary = []
+    for event in recent_events[:5]:  # Last 5 interactions
+        info = event.get("info", {})
+        raw_msg = info.get("raw", "")
+        
+        # Look for key-related information in past interactions
+        if raw_msg:
+            # Extract useful patterns from history
+            if "found" in raw_msg.lower() and "key" in raw_msg.lower():
+                history_summary.append(f"Previously: {raw_msg}")
+            elif "put" in raw_msg.lower() and "key" in raw_msg.lower():
+                history_summary.append(f"Previously: {raw_msg}")
+    
+    history_str = " ".join(history_summary[:3]) if history_summary else ""
+    
+    # Elderly-focused prompt - optimized for natural speech and uses history
     prompt = (
-        f"Write a brief, friendly message for {user_name}. "
-        f"They have {context_clean['total_events']} logged interactions. "
-        "Be warm and helpful. Keep it under 75 words."
+        f"You are a caring companion speaking to {user_name}, an elderly friend.\n\n"
+        f"They just told you: \"{current_msg}\"\n"
+        f"Current context: {context_str}\n"
+    )
+    
+    if history_str:
+        prompt += f"What you know from before: {history_str}\n"
+    
+    prompt += (
+        "\nRespond warmly and naturally:\n"
+        "- Acknowledge what they shared\n"
+        "- If they told you about family, show interest\n"
+        "- If they need help finding something and history shows where it was, remind them\n"
+        "- Keep it friendly and conversational, like talking to a good friend\n"
+        "- Short sentences, under 50 words\n"
+        "- Natural speech only - no formatting\n\n"
+        "Your response:"
     )
     
     # Increased max_tokens to allow for longer, more helpful responses
-    text = _call_gemini(prompt, max_tokens=512, return_json=False)
+    text = _call_gemini(prompt, max_tokens=200, return_json=False)
     
-    # Fallback if generation fails
+    # Better fallback if generation fails - make it context-aware
     if not text or "couldn't generate" in text.lower() or "content filter" in text.lower():
-        return f"Hello {user_name}! You have {context_clean['total_events']} logged interactions. How can I help you today?"
+        # Create a conversational fallback based on what they said
+        if "daughter" in current_msg.lower() or "son" in current_msg.lower() or "family" in current_msg.lower():
+            return f"That's wonderful, {user_name}. Family is so important. Tell me more about them!"
+        elif "key" in current_msg.lower() and "find" in current_msg.lower():
+            return f"Let's find those keys together, {user_name}. Have you checked your usual spots?"
+        elif "lost" in current_msg.lower() or "can't find" in current_msg.lower():
+            return f"Don't worry, {user_name}. We'll figure this out together. Where did you last see it?"
+        else:
+            return f"I'm listening, {user_name}. How can I help you today?"
     
-    # Clean up newlines - replace newlines with spaces, collapse multiple spaces
+    # Clean up formatting for natural speech
     if text:
-        text = re.sub(r'\n+', ' ', text)  # Replace newlines with space
-        text = re.sub(r'\s+', ' ', text)  # Replace multiple spaces with single space
+        # Remove markdown formatting
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)  # Remove bold **text**
+        text = re.sub(r'\*(.+?)\*', r'\1', text)      # Remove italic *text*
+        text = re.sub(r'#+\s*', '', text)             # Remove headers
+        text = re.sub(r'\n+', ' ', text)              # Replace newlines with spaces
+        text = re.sub(r'\s+', ' ', text)              # Collapse multiple spaces
+        text = re.sub(r'^\s*[-•]\s*', '', text)       # Remove bullet points
         text = text.strip()
+        
+        # Remove common AI response prefixes
+        prefixes_to_remove = [
+            "Here's what I'd say:",
+            "I would say:",
+            "Response:",
+            "My response:",
+        ]
+        for prefix in prefixes_to_remove:
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
     
-    return (text or f"Hello {user_name}! How can I help you today?").strip()
+    return (text or f"I'm here to help you, {user_name}.").strip()

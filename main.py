@@ -5,7 +5,8 @@ import requests
 import os
 import uvicorn
 from dotenv import load_dotenv
-from db import save_event
+from db import save_event, get_context_for_user
+from gemini_client import extract_important_info, generate_assistance
 
 load_dotenv()
 
@@ -24,7 +25,7 @@ class VoiceData(BaseModel):
 def read_root():
     return {"status": "Server is ONLINE and ready for signals."}
 
-@app.post("/listen")
+@app.post("/listenold")
 def receive_voice(data: VoiceData):
     print("------------------------------------------------")
     print(f"🎤 IPHONE SAID: {data.text}")
@@ -47,6 +48,71 @@ def receive_voice(data: VoiceData):
     }
 
     print("🗣️ Generating Audio with ElevenLabs...")
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        print("✅ Audio received! Streaming to iPhone...")
+        return Response(content=response.content, media_type="audio/mpeg")
+    else:
+        print(f"❌ ElevenLabs Error: {response.text}")
+        return {"status": "error", "message": "Failed to generate audio"}
+
+@app.post("/listen")
+def receive_voice(data: VoiceData):
+    print("------------------------------------------------")
+    print(f"🎤 IPHONE SAID: {data.text}")
+    print("------------------------------------------------")
+
+    # 1. Send to Gemini to extract important info and create bullet points
+    print("🧠 Processing with Gemini...")
+    extracted_info = extract_important_info(data.text)
+    print(f"📊 EXTRACTED INFO: {extracted_info}")
+    
+    # 2. Save the extracted info to MongoDB
+    try:
+        print("💾 Saving to MongoDB...")
+        doc_id = save_event(DEFAULT_USER, extracted_info)
+        print(f"✅ Saved to database with ID: {doc_id}")
+    except Exception as e:
+        print(f"❌ Database save failed: {e}")
+        # Continue even if DB save fails
+    
+    # 3. Generate a summary response using Gemini
+    print("✨ Generating Gemini response...")
+    # Get recent context for more informed responses
+    try:
+        context = get_context_for_user(DEFAULT_USER, limit=5)
+    except Exception as e:
+        print(f"⚠️  Could not retrieve context from DB: {e}")
+        context = []  # Use empty context if DB fails
+    
+    context_info = {
+        "user": DEFAULT_USER,
+        "recent_events": context,
+        "total_events": len(context),
+        "current_message": data.text,
+        "extracted": extracted_info
+    }
+    
+    gemini_message = generate_assistance(DEFAULT_USER, context_info)
+    print(f"💬 GEMINI SAYS: {gemini_message}")
+    
+    # 4. Send Gemini's response to ElevenLabs for TTS
+    print("🗣️ Generating Audio with ElevenLabs...")
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+    
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY
+    }
+    
+    payload = {
+        "text": gemini_message,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.5}
+    }
+
     response = requests.post(url, json=payload, headers=headers)
 
     if response.status_code == 200:

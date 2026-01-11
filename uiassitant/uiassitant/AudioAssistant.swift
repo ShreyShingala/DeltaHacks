@@ -6,10 +6,15 @@ import Combine
 import SmartSpectraSwiftSDK
 
 class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    // --- 🛠️ TEST MODE 🛠️ ---
+    // TRUE  = Logs to /listennah (No Audio, Saves Credits)
+    // FALSE = Sends to /listen (Real Audio response)
+    private let useTestMode = true
+    
     // --- UI VARIABLES ---
     @Published var spokenText = "Initializing..."
-    @Published var isListening = false // Green (Your Turn)
-    @Published var isSpeaking = false  // Blue (AI Turn)
+    @Published var isListening = false
+    @Published var isSpeaking = false
     
     // --- VITALS VARIABLES ---
     @Published var currentHeartRate: Double = 0.0
@@ -30,21 +35,26 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var silenceTimer: Timer?
     private var speakingTimer: Timer?
     private var isMonitoring = false
-    private var isProcessingRequest = false // Shield
+    private var isProcessingRequest = false
     
-    // --- MOVEMENT & TRIGGERS ---
+    // --- MOVEMENT TRACKING ---
     private var lastFaceCentroid: CGPoint?
-    private var lastInterventionTime: Date = Date.distantPast // COOLDOWN
-    private var sessionStartTime: Date? // WARM-UP TIMER
+    private var lastInterventionTime: Date = Date.distantPast
+    private var sessionStartTime: Date?
     
     // Config
     private let silenceThreshold: TimeInterval = 1.5
-    private let serverIP = "172.17.79.245" // YOUR LAPTOP IP
+    private let serverIP = "192.168.0.164"
     
-    // --- INIT ---
     override init() {
         super.init()
-        let apiKey = "QyQg2fsIqw3lSMXVvWIyv6Snt6kid0Dsabg4QHQA"
+        
+        // 1. Force Clean Start
+        SmartSpectraVitalsProcessor.shared.stopProcessing()
+        SmartSpectraVitalsProcessor.shared.stopRecording()
+        
+        // 2. NEW API KEY
+        let apiKey = "NSphZrIStb8J6ZBtujZbaaeKe3sAe2AR5SZHtskh"
         SmartSpectraSwiftSDK.shared.setApiKey(apiKey)
         SmartSpectraSwiftSDK.shared.setSmartSpectraMode(.continuous)
         SmartSpectraSwiftSDK.shared.setCameraPosition(.front)
@@ -56,7 +66,12 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    // --- 1. LOUD AUDIO CONFIGURATION ---
+    deinit {
+        stopPresageMonitoring()
+        nukeAudio()
+    }
+    
+    // --- LOUD AUDIO CONFIG ---
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
@@ -76,18 +91,18 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     // --- START / STOP ---
     func startPresageMonitoring() {
+        if isMonitoring { return }
         isMonitoring = true
-        sessionStartTime = Date() // START WARM-UP TIMER
+        sessionStartTime = Date()
         
-        if SmartSpectraVitalsProcessor.shared.processingStatus == .processing {
-            startVitalsLoop()
-            return
+        if SmartSpectraVitalsProcessor.shared.processingStatus != .processing {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                SmartSpectraVitalsProcessor.shared.startProcessing()
+                SmartSpectraVitalsProcessor.shared.startRecording()
+            }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            SmartSpectraVitalsProcessor.shared.startProcessing()
-            SmartSpectraVitalsProcessor.shared.startRecording()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             self.startVitalsLoop()
         }
     }
@@ -101,15 +116,12 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     private func startVitalsLoop() {
         monitoringTimer?.invalidate()
-        monitoringTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-            self.processSensorData()
+        monitoringTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.processSensorData()
         }
     }
     
-    // ==========================================
-    //  AUDIO LOGIC
-    // ==========================================
-    
+    // --- AUDIO LOGIC ---
     func nukeAudio() {
         silenceTimer?.invalidate()
         speakingTimer?.invalidate()
@@ -164,7 +176,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             forceSpeaker()
         } catch { print("❌ Engine Error: \(error)"); return }
         
-        recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
+        recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
+            guard let self = self else { return }
             if self.isProcessingRequest { return }
             if let result = result {
                 DispatchQueue.main.async { self.spokenText = result.bestTranscription.formattedString }
@@ -176,9 +189,9 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func resetSilenceTimer() {
         if isProcessingRequest { return }
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { _ in
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
             print("🤫 Silence detected. Sending...")
-            self.sendDataToBackend()
+            self?.sendDataToBackend()
         }
     }
     
@@ -192,7 +205,6 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             startListeningSequence()
             return
         }
-        
         sendPayload(text: messageToSend, isAutoTrigger: false)
     }
     
@@ -220,6 +232,27 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
             ]
         ]
         
+        // --- TEST MODE ---
+        if useTestMode {
+            print("🟨 TEST MODE: Logging to /listennah")
+            guard let logUrl = URL(string: "http://\(serverIP):8000/listennah") else {
+                isProcessingRequest = false
+                return
+            }
+            
+            var request = URLRequest(url: logUrl)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            
+            URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+                print("✅ Log Sent. Resetting...")
+                DispatchQueue.main.async { self?.finishTurn() }
+            }.resume()
+            return
+        }
+        
+        // --- PRODUCTION ---
         guard let url = URL(string: "http://\(serverIP):8000/listen") else {
             isProcessingRequest = false
             return
@@ -229,7 +262,8 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         
-        URLSession.shared.dataTask(with: request) { data, _, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            guard let self = self else { return }
             if error != nil || data == nil || data?.first == 123 {
                 DispatchQueue.main.async {
                     self.isProcessingRequest = false
@@ -261,9 +295,9 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 
                 let duration = Double(audioPlayer?.duration ?? 2.0)
                 speakingTimer?.invalidate()
-                speakingTimer = Timer.scheduledTimer(withTimeInterval: duration + 1.0, repeats: false) { _ in
+                speakingTimer = Timer.scheduledTimer(withTimeInterval: duration + 1.0, repeats: false) { [weak self] _ in
                     print("⚠️ Watchdog Reset")
-                    self.finishTurn()
+                    self?.finishTurn()
                 }
             } else {
                 finishTurn()
@@ -289,16 +323,11 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         triggerAutoIntervention(reason: "User Requested Help")
     }
     
-    // --- SAFE VITALS & WARM-UP LOGIC ---
+    // --- SAFE VITALS & MOVEMENT ---
     func processSensorData() {
         if !isMonitoring { return }
         
-        // --- 1. WARM-UP CHECK (Prevents False Start) ---
-        // If the session is less than 5 seconds old, ignore data.
-        if let start = sessionStartTime, Date().timeIntervalSince(start) < 5.0 {
-            // print("⏳ Warming up sensors...")
-            return
-        }
+        if let start = sessionStartTime, Date().timeIntervalSince(start) < 5.0 { return }
         
         guard let metrics = SmartSpectraSwiftSDK.shared.metricsBuffer else { return }
         
@@ -307,45 +336,62 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
         
         var face = false
         var currentMovement = 0.0
+        var isShakingViolently = false
         
         if let edge = SmartSpectraSwiftSDK.shared.edgeMetrics {
             face = edge.hasFace
+            
+            // Calculate Centroid
             if face, let landmarks = edge.face.landmarks.last?.value, !landmarks.isEmpty {
                 var totalX: Float = 0, totalY: Float = 0
-                for point in landmarks { totalX += point.x; totalY += point.y }
-                let currentCentroid = CGPoint(x: Double(totalX)/Double(landmarks.count), y: Double(totalY)/Double(landmarks.count))
+                let count = Double(landmarks.count)
                 
-                if let last = lastFaceCentroid {
-                    let dx = currentCentroid.x - last.x
-                    let dy = currentCentroid.y - last.y
-                    currentMovement = sqrt(dx*dx + dy*dy)
+                if count > 0 {
+                    for point in landmarks { totalX += point.x; totalY += point.y }
+                    let currentCentroid = CGPoint(x: Double(totalX)/count, y: Double(totalY)/count)
+                    
+                    if let last = lastFaceCentroid {
+                        let dx = currentCentroid.x - last.x
+                        let dy = currentCentroid.y - last.y
+                        currentMovement = sqrt(dx*dx + dy*dy)
+                        
+                        // Shake Detection
+                        if abs(dx) > 10.0 || abs(dy) > 10.0 {
+                            isShakingViolently = true
+                        }
+                    }
+                    lastFaceCentroid = currentCentroid
                 }
-                lastFaceCentroid = currentCentroid
             } else {
                 lastFaceCentroid = nil
             }
         }
         
-        DispatchQueue.main.async {
-            self.movementScore = (self.movementScore * 0.9) + (currentMovement * 0.1)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Smoothed Movement
+            self.movementScore = (self.movementScore * 0.8) + (currentMovement * 0.2)
+            
             self.currentHeartRate = hr
             self.currentBreathingRate = br
             self.isFacePresent = face
             
-            // --- TRIGGER LOGIC ---
             let isPanicking = (hr > 90.0)
             let isHyperventilating = (br > 20.0)
-            let isAgitated = (self.movementScore > 5.0)
+            let isAgitated = (self.movementScore > 5.0 || isShakingViolently)
             
             if isPanicking || isHyperventilating || isAgitated {
                 self.isHighStress = true
                 
+                // Auto-Trigger (Every 30s)
                 if !self.isProcessingRequest && Date().timeIntervalSince(self.lastInterventionTime) > 10.0 {
                     self.lastInterventionTime = Date()
                     
-                    if isPanicking { self.triggerAutoIntervention(reason: "High Heart Rate (Panic)") }
-                    else if isHyperventilating { self.triggerAutoIntervention(reason: "Hyperventilation") }
-                    else { self.triggerAutoIntervention(reason: "Physical Agitation") }
+                    if isShakingViolently { self.triggerAutoIntervention(reason: "Violent Head Shaking") }
+                    else if isAgitated { self.triggerAutoIntervention(reason: "Physical Agitation") }
+                    else if isPanicking { self.triggerAutoIntervention(reason: "High Heart Rate") }
+                    else { self.triggerAutoIntervention(reason: "Hyperventilation") }
                 }
             } else {
                 self.isHighStress = false

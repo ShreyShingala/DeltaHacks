@@ -3,5 +3,5 @@ uvicorn[standard]==0.22.0
 pydantic>=2.6.0
 httpx==0.24.1
 pymongo==4.4.0
-google-generativeai
 requests>=2.31.0
+python-dotenv>=1.0.0

@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 import requests
 import os
+import json
 import uvicorn
 from dotenv import load_dotenv
 from db import save_event, get_context_for_user
@@ -85,6 +86,13 @@ def receive_voice(data: VoiceData):
     # Add original_message to extracted_info so frontend can access it
     extracted_info["original_message"] = data.text
     
+    # Add stress_detected to extracted_info for dashboard display
+    # Normalize schema: always include stress_detected (default False if no vitals)
+    if data.vitals:
+        extracted_info["stress_detected"] = data.vitals.stress_detected
+    else:
+        extracted_info["stress_detected"] = False
+    
     # 2. Save the extracted info to MongoDB
     try:
         print("💾 Saving to MongoDB...")
@@ -147,8 +155,19 @@ def receive_voice(data: VoiceData):
         print("✅ Audio received! Streaming to iPhone...")
         return Response(content=response.content, media_type="audio/mpeg")
     else:
-        print(f"❌ ElevenLabs Error: {response.text}")
-        return {"status": "error", "message": "Failed to generate audio"}
+        error_details = response.text
+        print(f"❌ ElevenLabs Error (Status {response.status_code}): {error_details}")
+        # Return error with more details for debugging
+        return Response(
+            content=json.dumps({
+                "status": "error",
+                "message": "Failed to generate audio",
+                "elevenlabs_status": response.status_code,
+                "elevenlabs_error": error_details
+            }),
+            media_type="application/json",
+            status_code=500
+        )
 
 @app.post("/is-there")
 def is_there():
@@ -182,10 +201,12 @@ def is_there():
 @app.post("/speak")
 def speak(data: VoiceData):
     # Write data.text to MongoDB database
+    # Normalize schema: use same structure as /listen endpoint
     event_data = {
         "original_message": data.text,
+        "raw": data.text,  # Always include raw for consistency
         "intent": "speak",
-        "raw": data.text
+        "stress_detected": False  # Always include stress_detected for consistency
     }
     save_event(DEFAULT_USER, event_data)
     print(f"💾 Saved to DB: {data.text[:50]}...")

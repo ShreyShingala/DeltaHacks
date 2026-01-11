@@ -1,0 +1,10 @@
+{
+  "text": "I can't find my keys and I'm really worried about missing my doctor's appointment",
+  "vitals": {
+    "heart_rate": 95,
+    "breathing_rate": 22,
+    "movement_score": 85,
+    "stress_detected": true
+  }
+}
+

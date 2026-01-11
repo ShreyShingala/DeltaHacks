@@ -44,7 +44,12 @@ export function MessageCard({ message, onUpdate, onDelete }: MessageCardProps) {
     }
   }
 
-  const getTypeColor = (type?: string) => {
+  const getTypeColor = (type?: string, stressDetected?: boolean) => {
+    // If stress is detected, use red background
+    if (stressDetected) {
+      return "bg-red-500/20 border-red-500/50"
+    }
+    
     switch (type) {
       case "reminder":
         return "bg-accent/10 border-accent"
@@ -105,8 +110,11 @@ export function MessageCard({ message, onUpdate, onDelete }: MessageCardProps) {
     }
   }
 
+  const extractedFields = message.extractedFields
+  const hasExtractedFields = extractedFields && Object.keys(extractedFields).length > 0
+
   return (
-    <Card className={`p-6 transition-all hover:shadow-md ${getTypeColor(message.type)}`}>
+    <Card className={`p-6 transition-all hover:shadow-md ${getTypeColor(message.type, message.stressDetected)}`}>
       <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-4">
           {isEditing ? (
@@ -118,7 +126,52 @@ export function MessageCard({ message, onUpdate, onDelete }: MessageCardProps) {
               autoFocus
             />
           ) : (
-            <p className="text-lg leading-relaxed text-foreground flex-1">{message.content}</p>
+            <div className="flex-1 space-y-2">
+              <p className="text-lg leading-relaxed text-foreground">{message.content}</p>
+              
+              {/* Display extracted fields if available */}
+              {hasExtractedFields && (
+                <div className="mt-3 pt-3 border-t border-border/50">
+                  <div className="flex flex-wrap gap-2 text-sm">
+                    {extractedFields.concern && (
+                      <span className="px-2 py-1 bg-accent/20 text-accent-foreground rounded-md">
+                        <strong>Concern:</strong> {extractedFields.concern}
+                      </span>
+                    )}
+                    {extractedFields.items && (
+                      <span className="px-2 py-1 bg-primary/20 text-primary-foreground rounded-md">
+                        <strong>Items:</strong> {extractedFields.items}
+                      </span>
+                    )}
+                    {extractedFields.location && (
+                      <span className="px-2 py-1 bg-blue-500/20 text-blue-700 dark:text-blue-300 rounded-md">
+                        <strong>Location:</strong> {extractedFields.location}
+                      </span>
+                    )}
+                    {extractedFields.people && (
+                      <span className="px-2 py-1 bg-purple-500/20 text-purple-700 dark:text-purple-300 rounded-md">
+                        <strong>People:</strong> {extractedFields.people}
+                      </span>
+                    )}
+                    {extractedFields.time && (
+                      <span className="px-2 py-1 bg-orange-500/20 text-orange-700 dark:text-orange-300 rounded-md">
+                        <strong>Time:</strong> {extractedFields.time}
+                      </span>
+                    )}
+                    {extractedFields.emotion && (
+                      <span className="px-2 py-1 bg-pink-500/20 text-pink-700 dark:text-pink-300 rounded-md">
+                        <strong>Emotion:</strong> {extractedFields.emotion}
+                      </span>
+                    )}
+                    {extractedFields.notes && (
+                      <span className="px-2 py-1 bg-gray-500/20 text-gray-700 dark:text-gray-300 rounded-md">
+                        <strong>Notes:</strong> {extractedFields.notes}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           
           {!isEditing && (

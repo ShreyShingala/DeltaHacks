@@ -117,7 +117,9 @@ def extract_important_info(message: str) -> dict:
                     "raw": message,
                     "intent": "note"
                 }
-            # Success - return the parsed result
+            # Success - return the parsed result, but always include raw field
+            # Normalize schema: always include raw for consistency
+            parsed["raw"] = message
             return parsed
     except Exception:
         # JSON parsing failed, use fallback

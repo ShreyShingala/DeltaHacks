@@ -1,5 +1,14 @@
 import { MessageTimeline } from "@/components/message-timeline"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import corner_logo from "@/images/corner_logo.png"
+
+const CornerLogo = () => {
+  return (
+    <div className="absolute top-0 left-0">
+      <img src={corner_logo.src} alt="Corner Logo" width={100} height={100} />
+    </div>
+  )
+}
 
 export default function PatientDashboard() {
   // Using the actual user in the database

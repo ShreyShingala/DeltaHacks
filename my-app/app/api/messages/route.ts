@@ -24,8 +24,24 @@ export async function GET(request: NextRequest) {
     // Map events to message format for frontend
     const messages = events.map((event: any) => {
       const info = event.info || {}
-      const originalMessage = info.raw || ""
+      const originalMessage = info.original_message || info.raw || ""
       const content = originalMessage || JSON.stringify(info)
+      
+      // Extract non-empty important fields for display
+      const extractedFields: any = {}
+      if (info.concern) extractedFields.concern = info.concern
+      if (info.items) extractedFields.items = info.items
+      if (info.location) extractedFields.location = info.location
+      if (info.people) extractedFields.people = info.people
+      if (info.time) extractedFields.time = info.time
+      if (info.emotion) extractedFields.emotion = info.emotion
+      // Only include notes if it's different from the original message (to avoid duplication)
+      if (info.notes && info.notes !== originalMessage && info.notes.trim()) {
+        extractedFields.notes = info.notes
+      }
+      
+      // Extract stress_detected for dashboard styling
+      const stressDetected = info.stress_detected === true || info.stress_detected === "true"
       
       if (BOOL_DEBUG) {
         return {
@@ -35,13 +51,22 @@ export async function GET(request: NextRequest) {
           patientId: event.user || user,
           sender: "User",
           type: info.intent || "note",
+          originalMessage: originalMessage,
+          extractedFields: Object.keys(extractedFields).length > 0 ? extractedFields : undefined,
+          stressDetected: stressDetected,
           originalData: info, // Include full info for debugging
         }
       } else {
         return {
+          _id: event._id?.toString(),
+          content: content,
           timestamp: event.ts || new Date(),
+          patientId: event.user || user,
           sender: "User",
-          content: originalMessage,
+          type: info.intent || "note",
+          originalMessage: originalMessage,
+          extractedFields: Object.keys(extractedFields).length > 0 ? extractedFields : undefined,
+          stressDetected: stressDetected,
         }
       }
     })

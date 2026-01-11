@@ -25,15 +25,63 @@ def read_root():
 @app.post("/listen")
 def receive_voice(data: VoiceData):
     print("------------------------------------------------")
-    print(f"IPHONE SAID: {data.text}")
+    print(f"🎤 IPHONE SAID: {data.text}")
     print("------------------------------------------------")
-    return {"status": "received", "you_said": data.text}
+
+    # 1. Ask ElevenLabs to speak the user's text (Echo)
+    # You can change 'data.text' to any response string you want the AI to say
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+    
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY
+    }
+    
+    payload = {
+        "text": f"You said: {data.text}", # Adding prefix so you know it's working
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.5}
+    }
+
+    print("🗣️ Generating Audio with ElevenLabs...")
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        print("✅ Audio received! Streaming to iPhone...")
+        return Response(content=response.content, media_type="audio/mpeg")
+    else:
+        print(f"❌ ElevenLabs Error: {response.text}")
+        return {"status": "error", "message": "Failed to generate audio"}
 
 @app.post("/is-there")
-def receive_voice():
+def is_there():
+    """Checks if user is present (triggered by face loss)."""
+    print("\n------------------------------------------------")
+    print("⚠️  FACE LOST DETECTED - Checking in...")
     print("------------------------------------------------")
-    print(f"Hey is anyone there?:")
-    print("------------------------------------------------")
+    
+    text_to_say = "Are you still there? I can't see you."
+    
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY
+    }
+    payload = {
+        "text": text_to_say,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.5}
+    }
+    
+    response = requests.post(url, json=payload, headers=headers)
+    
+    if response.status_code == 200:
+        print("✅ sending 'Are you there' audio...")
+        return Response(content=response.content, media_type="audio/mpeg")
+    
+    return {"status": "error"}
 
 @app.post("/speak")
 def speak(data: VoiceData):

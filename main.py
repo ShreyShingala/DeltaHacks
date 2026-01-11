@@ -5,6 +5,7 @@ import requests
 import os
 import uvicorn
 from dotenv import load_dotenv
+from db import save_event
 
 load_dotenv()
 
@@ -14,6 +15,7 @@ app = FastAPI()
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 VOICE_ID = "TxGEqnHWrfWFTfGW9XjX"
+DEFAULT_USER = os.getenv("PRESAGE_USER", "alice")
 
 class VoiceData(BaseModel):
     text: str
@@ -85,6 +87,15 @@ def is_there():
 
 @app.post("/speak")
 def speak(data: VoiceData):
+    # Write data.text to MongoDB database
+    event_data = {
+        "original_message": data.text,
+        "intent": "speak",
+        "raw": data.text
+    }
+    save_event(DEFAULT_USER, event_data)
+    print(f"💾 Saved to DB: {data.text[:50]}...")
+    
     response = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}",
         headers={

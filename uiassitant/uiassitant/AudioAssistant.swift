@@ -47,7 +47,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     // Config
     private let silenceThreshold: TimeInterval = 1.5
-    private let serverIP = "192.168.0.164"
+    private let serverIP = "172.17.79.245"
     
     override init() {
         super.init()

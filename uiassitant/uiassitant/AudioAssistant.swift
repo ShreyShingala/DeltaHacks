@@ -402,7 +402,7 @@ class AudioAssistant: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.isHighStress = true
                 
                 // Auto-Trigger (60s Cooldown & Check Speaking)
-                if !self.isProcessingRequest && !self.isSpeaking && Date().timeIntervalSince(self.lastInterventionTime) > 60.0 {
+                if !self.isProcessingRequest && !self.isSpeaking && Date().timeIntervalSince(self.lastInterventionTime) > 10.0 {
                     self.lastInterventionTime = Date()
                     
                     // --- PRIORITY SWAP: VITALS FIRST, THEN MOVEMENT ---
